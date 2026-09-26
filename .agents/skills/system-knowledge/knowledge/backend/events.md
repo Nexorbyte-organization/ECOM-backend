@@ -9,6 +9,8 @@ Create/update validate times, dates/deadline, gender totals, and count relative 
 
 Company queries resolve organizerId from owner/staff. Talent responses hide QR metadata and hide WhatsApp fields until accepted. Group workflow stores an organizer-provided link or supplies a wa.me message-sharing link; no WhatsApp provisioning API is implemented.
 
+New event photos upload to `ECOM/organization/{organizerId}/events/{eventId}/photos`, using IDs from the ownership-checked event record and the shared `src/utils/uploadFolders.js` helper. Existing photos are not moved, and replacements continue deleting the previous stored public ID. The photo response contract is unchanged.
+
 ## Source entry points
 - `src/routers/organizer.router.js`
 - `src/controllers/organizer.controller.js`

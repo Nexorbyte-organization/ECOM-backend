@@ -4,6 +4,7 @@ import { User, Event, Application, Attendance, Review, Referral } from '../../db
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
+import { UploadFolders } from '../utils/uploadFolders.js';
 import { ApiFeature } from '../utils/apiFeature.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
 import { normalizeEventCategories, normalizeEventCategory, normalizeLanguages } from '../utils/normalization.js';
@@ -224,7 +225,7 @@ export class UsherController {
         if (!user) return next(new AppError(messages.user.notfound, 404));
 
         const previousPublicId = user.portfolioPicture?.public_id;
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/profiles');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.profilePicture(user.id));
         user.portfolioPicture = uploaded;
         await user.save();
         if (previousPublicId && previousPublicId !== 'default_avatar') {
@@ -593,7 +594,7 @@ export class UsherController {
         const portfolio = Array.isArray(user.portfolio) ? [...user.portfolio] : [];
         if (portfolio.length >= 12) return next(new AppError('A portfolio can contain up to 12 images', 400));
 
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/portfolios');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.portfolio(user.id));
         portfolio.push(uploaded);
         user.portfolio = portfolio;
         await user.save();
