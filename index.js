@@ -7,7 +7,7 @@ import { rateLimit } from 'express-rate-limit';
 import { initApp } from './src/initapp.js';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
-
+ 
 dotenv.config();
 const app = express();
 const configuredOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '')
