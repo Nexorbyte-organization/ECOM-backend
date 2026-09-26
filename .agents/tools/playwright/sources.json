@@ -1,0 +1,36 @@
+{
+  "gpt-taste": {
+    "upstreamSkillSha256": "2e64c269953f2656c21bf5a0fa6b4568e82fe0c72b36e8f84758e090349966a5",
+    "repo": "Leonxlnx/taste-skill",
+    "commit": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+    "license": "MIT",
+    "sourcePath": "skills/gpt-tasteskill"
+  },
+  "image-to-code": {
+    "upstreamSkillSha256": "4c060a8064a8b13380bc2ef3d6e6a1d0b1e316aa093cd9807d0ce9e4eeb037fa",
+    "repo": "Leonxlnx/taste-skill",
+    "commit": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b",
+    "license": "MIT",
+    "sourcePath": "skills/image-to-code-skill"
+  },
+  "web-design-guidelines": {
+    "upstreamSkillSha256": "f4647ca866a3accf763777f83e7682954f0187cd6bea7eea0399796652414e8f",
+    "repo": "vercel-labs/agent-skills",
+    "commit": "063bee94c3f4df8453406c830b0a7df0f2860278",
+    "license": "MIT",
+    "version": "1.0.0",
+    "guidelinesRepo": "vercel-labs/web-interface-guidelines",
+    "guidelinesCommit": "e3d624baaf29dc1fc645aff3e38f03e564d2d6b1",
+    "guidelinesSha256": "5a775e6411f790f518dbc9c1fa7c50a89e6873502d9a3530a6eb223a590bcfe8",
+    "sourcePath": "skills/web-design-guidelines"
+  },
+  "playwright-cli": {
+    "upstreamSkillSha256": "85ef187460f776a4e9b44ffbf4a0293e5585d4192d0858c23fb011c72784f347",
+    "repo": "microsoft/playwright-cli",
+    "commit": "74354ecc7a43da16d91a9bc54fa8db8283a3fcf5",
+    "license": "Apache-2.0",
+    "package": "@playwright/cli",
+    "version": "0.1.21",
+    "sourcePath": "skills/playwright-cli"
+  }
+}
