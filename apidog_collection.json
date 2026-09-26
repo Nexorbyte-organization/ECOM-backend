@@ -1,0 +1,740 @@
+{
+  "info": {
+    "name": "O-Ushers API",
+    "description": "Complete APIDog collection for O-Ushers backend — Auth, Admin, Organizer & Usher endpoints.",
+    "version": "1.0.0"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000", "type": "string" },
+    { "key": "token",   "value": "",                      "type": "string" },
+    { "key": "userId",  "value": "",                      "type": "string" },
+    { "key": "eventId", "value": "",                      "type": "string" },
+    { "key": "applicationId", "value": "",                "type": "string" }
+  ],
+  "item": [
+
+    {
+      "name": "🔐 Auth",
+      "item": [
+        {
+          "name": "Sign Up",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/signup",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "fullName": "Ahmed Yousef",
+                "userName": "ahmedY",
+                "email": "ahmed@test.com",
+                "password": "Test@1234",
+                "mobileNumber": "01012345678",
+                "city": "Cairo",
+                "experience": 2,
+                "role": "usher",
+                "rate": 5,
+                "languages": ["Arabic", "English"],
+                "eventCategories": ["corporate", "wedding"],
+                "portfolio": [{ "link": "https://ahmed-portfolio.com", "title": "Events Work" }]
+              }
+            }
+          },
+          "test": "pm.test('Status 201', () => pm.response.to.have.status(201));\npm.test('Has data', () => pm.expect(pm.response.json()).to.have.property('data'));"
+        },
+        {
+          "name": "Login (saves token)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/login",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "email": "ahmed@test.com",
+                "password": "Test@1234"
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": "pm.test('Status 200', () => pm.response.to.have.status(200));\nconst json = pm.response.json();\npm.test('Has token', () => pm.expect(json.data).to.have.property('token'));\npm.collectionVariables.set('token', json.data.token);"
+            }
+          ]
+        },
+        {
+          "name": "Forget Password",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/forget-password",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": { "email": "ahmed@test.com" }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Verify OTP",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/verify-otp",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": { "email": "ahmed@test.com", "otp": "123456" }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/auth/reset-password",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": { "email": "ahmed@test.com", "newPassword": "NewPass@1234" }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get All Users (usher only)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/auth/users",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Has data array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+        },
+        {
+          "name": "Get Talent Profile by ID (usher only)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/auth/talents/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health"
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Server up', () => pm.expect(pm.response.json().server).to.be.true);"
+        }
+      ]
+    },
+
+    {
+      "name": "🛡️ Admin",
+      "item": [
+        {
+          "name": "Dashboard",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/admin/dashboard",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Has stats', () => pm.expect(pm.response.json().data).to.have.property('stats'));"
+        },
+        {
+          "name": "Get All Users",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?search=&role=all",
+              "query": [
+                { "key": "search", "value": "" },
+                { "key": "role",   "value": "all" }
+              ]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Data is array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+        },
+        {
+          "name": "Get All Users — Filter by role=usher",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?role=usher",
+              "query": [{ "key": "role", "value": "usher" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get All Users — Search by name",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?search=Ahmed",
+              "query": [{ "key": "search", "value": "Ahmed" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get All Ushers",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/admin/ushers",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get All Organizers",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/admin/organizers",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Block User",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/users/{{userId}}/block",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Blocked message', () => pm.expect(pm.response.json().message).to.include('blocked'));"
+        },
+        {
+          "name": "Unblock User",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/users/{{userId}}/unblock",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Verify User",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/users/{{userId}}/verify",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Unverify User",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/users/{{userId}}/unverify",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Update User Status",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/users/{{userId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": { "status": "verified" } }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Reset Usher Late Excuses",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/admin/ushers/{{userId}}/reset-excuses",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get All Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/admin/events?status=all",
+              "query": [{ "key": "status", "value": "all" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Data is array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+        },
+        {
+          "name": "Get All Events — Filter by status=open",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/admin/events?status=open",
+              "query": [{ "key": "status", "value": "open" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Update Event Status",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/admin/events/{{eventId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": { "status": "cancelled" } }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Delete Event",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/admin/events/{{eventId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        }
+      ]
+    },
+
+    {
+      "name": "🏢 Organizer",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/organizer/profile",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Update My Profile",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/organizer/profile",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "fullName": "Elite Events Co.",
+                "description": "Premium event organizer",
+                "city": "Cairo",
+                "mobileNumber": "01022334455",
+                "website": "https://eliteevents.eg"
+              }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Upload Company Logo",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/organizer/profile/logo",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "logo", "type": "file", "src": "/path/to/logo.png" }]
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Dashboard",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/organizer/dashboard",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Create Event",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/organizer/events",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "title": "Tech Summit 2026",
+                "category": "corporate",
+                "eventDate": "2026-06-15",
+                "applicationDeadline": "2026-06-10",
+                "startTime": "09:00",
+                "endTime": "18:00",
+                "location": "Cairo International Conference Center",
+                "requiredCount": 10,
+                "genderPreference": "any",
+                "budget": 500,
+                "dressCode": "Formal dress code, bilingual",
+                "notes": "Annual tech conference"
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": "pm.test('Status 201', () => pm.response.to.have.status(201));\nconst json = pm.response.json();\nif (json.data && json.data.id) pm.collectionVariables.set('eventId', json.data.id);"
+            }
+          ]
+        },
+        {
+          "name": "Get My Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/organizer/events?status=open",
+              "query": [{ "key": "status", "value": "open" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get Event by ID",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Update Event",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": { "title": "Tech Summit 2026 — Updated", "budget": 600 }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Close Event",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}/close",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get Event Applicants",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}/applicants",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Data is array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+        },
+        {
+          "name": "Accept Applicant",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/organizer/applications/{{applicationId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": { "status": "accepted" } }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Reject Applicant",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/organizer/applications/{{applicationId}}/status",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": { "status": "rejected" } }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Mark Attendance",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}/attendance",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "talentId": "{{userId}}",
+                "status": "present",
+                "checkInTime": "2026-06-15T09:00:00Z"
+              }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Review & Rate Talent",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}/reviews",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "talentId": "{{userId}}",
+                "rating": 5,
+                "comment": "Excellent performance"
+              }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get Event Referrals",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/organizer/events/{{eventId}}/referrals",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Search Talents",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/organizer/talents?city=Cairo&category=corporate",
+              "query": [
+                { "key": "city",     "value": "Cairo" },
+                { "key": "category", "value": "corporate" }
+              ]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Direct Book a Talent",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/organizer/direct-book",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "userId": "{{userId}}",
+                "eventId": "{{eventId}}"
+              }
+            }
+          },
+          "test": "pm.test('Status 200 or 201', () => pm.expect([200,201]).to.include(pm.response.code));"
+        }
+      ]
+    },
+
+    {
+      "name": "👤 Usher",
+      "item": [
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "url": "{{baseUrl}}/usher/profile/update",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "fullName": "Ahmed Yousef Updated",
+                "city": "Alexandria",
+                "experience": 3,
+                "languages": ["Arabic", "English", "French"],
+                "eventCategories": ["corporate", "wedding"]
+              }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Upload Profile Picture",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/usher/profile/picture",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "picture", "type": "file", "src": "/path/to/photo.jpg" }]
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Browse Available Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/usher/events/browse?city=Cairo&category=corporate",
+              "query": [
+                { "key": "city",     "value": "Cairo" },
+                { "key": "category", "value": "corporate" }
+              ]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));\npm.test('Data is array', () => pm.expect(pm.response.json().data).to.be.an('array'));"
+        },
+        {
+          "name": "Apply to Event",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/usher/events/apply",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": { "eventId": "{{eventId}}" }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": "pm.test('Status 201', () => pm.response.to.have.status(201));\nconst json = pm.response.json();\nif (json.data && json.data.id) pm.collectionVariables.set('applicationId', json.data.id);"
+            }
+          ]
+        },
+        {
+          "name": "My Applications — All",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/usher/applications/my",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "My Applications — Upcoming",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/usher/applications/my?filter=upcoming",
+              "query": [{ "key": "filter", "value": "upcoming" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "My Applications — Past",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/usher/applications/my?filter=past",
+              "query": [{ "key": "filter", "value": "past" }]
+            },
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Event History",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/usher/events/history",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Excuse from Event",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/usher/applications/{{applicationId}}/excuse",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": { "reason": "Medical emergency" }
+            }
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Refer a Talent",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/usher/refer",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type",  "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": {
+                "referredTalentId": "{{userId}}",
+                "eventId": "{{eventId}}"
+              }
+            }
+          },
+          "test": "pm.test('Status 200 or 201', () => pm.expect([200,201]).to.include(pm.response.code));"
+        },
+        {
+          "name": "View Talent Profile by ID (shared)",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/usher/profile/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        },
+        {
+          "name": "Get Own Profile",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/usher/{{userId}}",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          },
+          "test": "pm.test('Status 200', () => pm.response.to.have.status(200));"
+        }
+      ]
+    }
+
+  ]
+}

@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Oo Ushers API</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #000000;
+      color: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      overflow: hidden;
+    }
+
+    /* Animated background glow */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(168, 85, 247, 0.1) 0%, rgba(139, 92, 246, 0.05) 40%, transparent 70%);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      animation: pulse 4s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 0.5;
+        transform: translate(-50%, -50%) scale(1);
+      }
+
+      50% {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(1.15);
+      }
+    }
+
+    .container {
+      text-align: center;
+      padding: 48px 32px;
+      max-width: 520px;
+      width: 100%;
+      position: relative;
+      z-index: 1;
+    }
+
+
+    h1 {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: -1.5px;
+      background: linear-gradient(135deg, #a855f7, #7c3aed, #6d28d9);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 12px;
+      animation: fadeInDown 0.8s ease-out 0.15s both;
+    }
+
+    .tagline {
+      font-size: 18px;
+      color: #999999;
+      margin-bottom: 40px;
+      animation: fadeInDown 0.8s ease-out 0.3s both;
+    }
+
+    .status-card {
+      background: #141414;
+      border: 1px solid #222222;
+      border-radius: 12px;
+      padding: 28px 24px;
+      margin-bottom: 32px;
+      animation: fadeInUp 0.8s ease-out 0.45s both;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+    }
+
+    .status-row:not(:last-child) {
+      border-bottom: 1px solid #1e1e1e;
+    }
+
+    .status-label {
+      font-size: 14px;
+      color: #777777;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #22c55e;
+    }
+
+    .status-badge.online {
+      color: #22c55e;
+    }
+
+    .status-badge.offline {
+      color: #ef4444;
+    }
+
+    .status-badge.loading {
+      color: #777777;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #22c55e;
+      border-radius: 50%;
+      animation: blink 2s ease-in-out infinite;
+    }
+
+    .status-dot.online {
+      background-color: #22c55e;
+    }
+
+    .status-dot.offline {
+      background-color: #ef4444;
+    }
+
+    /* Spinner for loading state */
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid #333333;
+      border-top-color: #a855f7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @keyframes blink {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.3;
+      }
+    }
+
+    .version {
+      font-size: 13px;
+      color: #555555;
+      animation: fadeInUp 0.8s ease-out 0.6s both;
+    }
+
+    .divider {
+      width: 60px;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, #a855f7, #7c3aed, transparent);
+      margin: 24px auto;
+      border-radius: 2px;
+      animation: fadeInUp 0.8s ease-out 0.55s both;
+    }
+
+    @keyframes fadeInDown {
+      from {
+        opacity: 0;
+        transform: translateY(-20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 480px) {
+      h1 {
+        font-size: 32px;
+      }
+
+      .tagline {
+        font-size: 16px;
+      }
+
+      .container {
+        padding: 32px 20px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <h1>Oo Ushers API</h1>
+    <p class="tagline">Backend services are up and running</p>
+
+    <div class="status-card">
+      <div class="status-row">
+        <span class="status-label">Server</span>
+        <span class="status-badge online">
+          <span class="status-dot online"></span>
+          Operational
+        </span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">API</span>
+        <span class="status-badge online">
+          <span class="status-dot online"></span>
+          Online
+        </span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Database</span>
+        <span id="db-status" class="status-badge loading">
+          <span class="spinner"></span>
+          Checking...
+        </span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <p class="version">v1.0.0 &bull; &copy; 2026 Oo Ushers</p>
+  </div>
+
+  <script>
+    async function checkDbStatus() {
+      const el = document.getElementById('db-status');
+      try {
+        const res = await fetch('/health');
+        const data = await res.json();
+
+        if (data.database) {
+          el.className = 'status-badge online';
+          el.innerHTML = '<span class="status-dot online"></span> Connected';
+        } else {
+          el.className = 'status-badge offline';
+          el.innerHTML = '<span class="status-dot offline"></span> Disconnected';
+        }
+      } catch {
+        el.className = 'status-badge offline';
+        el.innerHTML = '<span class="status-dot offline"></span> Disconnected';
+      }
+    }
+
+    checkDbStatus();
+  </script>
+</body>
+
+</html>

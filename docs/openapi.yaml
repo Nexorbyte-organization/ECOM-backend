@@ -1,0 +1,3125 @@
+openapi: 3.0.3
+info:
+  title: O-Ushers API
+  description: |
+    The **O-Ushers** platform connects event organizers with professional ushers (talents).
+
+    ## Roles
+    | Role | Description |
+    |------|-------------|
+    | **Usher** | A talent who browses events, applies, and manages their profile |
+    | **Organizer** | Posts events, manages applicants, marks attendance & reviews |
+    | **Organizer Member** | Uses the organizer workspace without event or staff CRUD access |
+    | **Organizer Supervisor** | Uses the organizer workspace and manages event operations |
+    | **Admin** | Platform-level management: users, events, verification |
+
+    ## Authentication
+    Browser clients authenticate with secure HTTP-only cookies. API clients may also send the
+    short-lived access token returned by `POST /auth/login` as a Bearer token.
+
+    ## Pagination
+    Paginated endpoints accept `page` and `size` query parameters and return:
+    ```json
+    { "data": [], "currentPage": 1, "totalPages": 5, "totalCount": 42 }
+    ```
+  version: 1.0.0
+  contact:
+    email: ooushers@gmail.com
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+  - url: https://o-ushers.vercel.app
+    description: Production server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+    description: |
+      Public authentication endpoints — signup, login, password reset flow.
+      No Bearer token required (except `/auth/me`).
+  - name: Ushers
+    description: |
+      Endpoints for the **Usher** role. Ushers manage their profile, browse
+      and apply for events, track their applications, and refer other talents.
+  - name: Organizers
+    description: |
+      Endpoints for the **Organizer** role. Organizers create events, manage
+      applicants, mark attendance, write reviews, and directly book talents.
+  - name: Admins
+    description: |
+      Endpoints for the **Admin** role. Admins have full platform visibility:
+      dashboard stats, user management (block/unblock/verify), and event
+      management (status changes, deletion).
+  - name: Health
+    description: Server and database health checks.
+  - name: Notifications
+    description: Persistent in-app notifications for the authenticated user.
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ──────────────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns live server and database connectivity status.
+      security: []
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  server: { type: boolean, example: true }
+                  database: { type: boolean, example: true }
+
+  /verify/{token}:
+    get:
+      tags: [Auth]
+      summary: Verify email address
+      description: |
+        Called when the user clicks the verification link sent to their email
+        after signup. Returns an HTML success/failure page.
+      security: []
+      operationId: verifyEmail
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+          description: JWT token embedded in the verification email link.
+      responses:
+        '200':
+          description: HTML page — verification succeeded
+        '401':
+          description: HTML page — token invalid or expired
+
+  # ── AUTH ────────────────────────────────────────────────────────────────────
+  /auth/signup:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      description: |
+        Creates a new user account (usher, organizer, or admin) and sends a
+        verification email. The account cannot log in until the email is verified.
+      security: []
+      operationId: signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+            example:
+              fullName: Ahmed Ali
+              userName: ahmed_ali
+              email: ahmed@example.com
+              password: StrongPass@123
+              mobileNumber: "+201234567890"
+              city: Cairo
+              experience: 2
+              role: usher
+              languages: [arabic, english]
+              eventCategories: [wedding, corporate]
+      responses:
+        '201':
+          description: Account created — verification email sent
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      description: Authenticates the user and returns a JWT Bearer token.
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: ahmed@example.com
+              password: StrongPass@123
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  message: { type: string }
+                  role: { type: string, enum: [usher, organizer, admin] }
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string, description: "Bearer JWT token" }
+                      user: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/forget-password:
+    post:
+      tags: [Auth]
+      summary: Request password reset OTP
+      description: |
+        Sends a 6-digit OTP to the user's email. OTP is valid for **15 minutes**.
+        Requests are rate-limited to one per 30 seconds.
+      security: []
+      operationId: forgetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: ahmed@example.com
+      responses:
+        '200':
+          description: OTP sent to email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Rate limit — wait before requesting a new OTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      summary: Verify OTP
+      description: |
+        Validates the 6-digit OTP. After 3 failed attempts the OTP is
+        invalidated and a new one must be requested.
+      security: []
+      operationId: verifyOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, otp]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: ahmed@example.com
+                otp:
+                  type: string
+                  minLength: 6
+                  maxLength: 6
+                  example: "483920"
+      responses:
+        '200':
+          description: OTP verified — proceed to reset-password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Max OTP attempts exceeded
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset password
+      description: Sets a new password. Requires OTP to have been verified first.
+      security: []
+      operationId: resetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, newPassword]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: ahmed@example.com
+                newPassword:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: NewStrongPass@456
+      responses:
+        '200':
+          description: Password updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: OTP not verified
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get own profile (any role)
+      description: Returns the authenticated user's full profile. Works for all roles.
+      operationId: getMyProfile
+      responses:
+        '200':
+          description: Own profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /auth/users:
+    get:
+      tags: [Auth]
+      summary: Get all users (Usher-scoped)
+      description: Returns a paginated list of all users. Accessible by ushers only.
+      operationId: getAllUsersAuth
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── USHERS ──────────────────────────────────────────────────────────────────
+  /usher/{id}:
+    get:
+      tags: [Ushers]
+      summary: Get own profile
+      description: |
+        Returns the authenticated usher's own full profile.
+        `id` in the path must match the authenticated user's ID.
+      operationId: getUsherProfile
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: The usher's own UUID (must match auth token).
+      responses:
+        '200':
+          description: Own usher profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/profile/update:
+    put:
+      tags: [Ushers]
+      summary: Update own profile
+      description: Updates the usher's text profile fields (fullName, city, experience, languages, eventCategories).
+      operationId: updateUsherProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsherUpdateProfileRequest'
+            example:
+              fullName: Ahmed Ali
+              city: Alexandria
+              experience: 3
+              languages: [arabic, english]
+              eventCategories: [wedding, corporate, festival]
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/profile/picture:
+    patch:
+      tags: [Ushers]
+      summary: Upload / change profile picture
+      description: |
+        Uploads a new profile picture to Cloudinary. Send as `multipart/form-data`
+        with the file in the `picture` field.
+        Replaces the existing picture (deletes old one from Cloudinary).
+      operationId: uploadUsherProfilePicture
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [picture]
+              properties:
+                picture:
+                  type: string
+                  format: binary
+                  description: Image file (jpg, png, webp, etc.)
+      responses:
+        '200':
+          description: Profile picture updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          portfolioPicture: { $ref: '#/components/schemas/CloudinaryFile' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/profile/{id}:
+    get:
+      tags: [Ushers]
+      summary: View any usher's public profile
+      description: |
+        Returns a public, read-only view of a usher profile including event history
+        and reviews. Accessible by **usher**, **organizer**, and **admin** roles.
+      operationId: getUsherProfileById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: UUID of the usher to view.
+      responses:
+        '200':
+          description: Public usher profile with event history and reviews
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+                          eventHistory:
+                            type: array
+                            items: { $ref: '#/components/schemas/EventHistoryItem' }
+                          reviews:
+                            type: array
+                            items: { $ref: '#/components/schemas/Review' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/events/browse:
+    get:
+      tags: [Ushers]
+      summary: Browse available events
+      description: |
+        Returns a paginated list of currently **open** events whose application
+        deadline has not passed. Filterable by `category` and `city`.
+      operationId: browseEvents
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+          description: Filter by event category.
+        - name: city
+          in: query
+          schema: { type: string }
+          description: Filter by city name (case-insensitive partial match).
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated list of open events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEvents'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/events/apply:
+    post:
+      tags: [Ushers]
+      summary: Apply to an event
+      description: |
+        Submits an application to an open event. Business rules enforced:
+        - **BR-01**: Cannot apply twice to the same event.
+        - **BR-02**: Application deadline must not have passed.
+      operationId: applyToEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId]
+              properties:
+                eventId:
+                  type: string
+                  format: uuid
+                  example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+      responses:
+        '201':
+          description: Application submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Application' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/applications/my:
+    get:
+      tags: [Ushers]
+      summary: Track my applications
+      description: |
+        Returns the usher's own applications with enriched event data.
+        Optionally filter by `upcoming` or `past` events.
+      operationId: getMyApplications
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            enum: [upcoming, past]
+          description: Filter applications by event date.
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+      responses:
+        '200':
+          description: Paginated applications list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedApplications'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/events/history:
+    get:
+      tags: [Ushers]
+      summary: Get event history
+      description: |
+        Returns all past events where the usher was **accepted** or **excused**,
+        with attendance status and review rating for each event.
+      operationId: getMyEventHistory
+      responses:
+        '200':
+          description: Event history list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/EventHistoryItem' }
+                      count: { type: integer, example: 7 }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/applications/{applicationId}/excuse:
+    patch:
+      tags: [Ushers]
+      summary: Excuse from an accepted event
+      description: |
+        Marks an accepted application as **excused**. Business rules:
+        - **BR-03**: Can only excuse from `accepted` applications.
+        - **BR-04**: Excusing within 3 days of deadline = late excuse penalty (+1 counter).
+        - **BR-08**: Late excuse resets the consecutive-good-events streak.
+      operationId: excuseFromEvent
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: UUID of the application to excuse.
+      responses:
+        '200':
+          description: Excused successfully (with or without late penalty)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          applicationStatus: { type: string, example: excused }
+                          isLateExcuse: { type: boolean }
+                          lateExcuseCount: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/refer:
+    post:
+      tags: [Ushers]
+      summary: Refer a talent to an event
+      description: |
+        Refers another usher to an open event. Business rules:
+        - **BR-13**: Cannot refer a talent already accepted or rejected for the event.
+        - Cannot refer yourself.
+        - Creates an application (pending) for the referred talent if none exists.
+      operationId: referTalent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, referredTalentId]
+              properties:
+                eventId:
+                  type: string
+                  format: uuid
+                  example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                referredTalentId:
+                  type: string
+                  format: uuid
+                  example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
+      responses:
+        '201':
+          description: Talent referred successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Referral' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── ORGANIZERS ──────────────────────────────────────────────────────────────
+  /organizer/dashboard:
+    get:
+      tags: [Organizers]
+      summary: Organizer dashboard
+      description: |
+        Returns the organizer's key stats: total/open/confirmed/completed events,
+        total hired count, and the 5 most recent events.
+      operationId: getOrganizerDashboard
+      responses:
+        '200':
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          totalEvents: { type: integer }
+                          openEvents: { type: integer }
+                          confirmedEvents: { type: integer }
+                          completedEvents: { type: integer }
+                          totalHired: { type: integer }
+                          recentEvents:
+                            type: array
+                            items: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /organizer/profile:
+    get:
+      tags: [Organizers]
+      summary: Get own organizer profile
+      description: Returns the authenticated organizer's own profile.
+      operationId: getOrganizerProfile
+      responses:
+        '200':
+          description: Organizer profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Organizers]
+      summary: Update organizer profile
+      description: |
+        Updates the organizer's profile. `description` and `website` are stored
+        inside the `organizationInfo` JSON field.
+      operationId: updateOrganizerProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName: { type: string, example: "Nile Events Co." }
+                city: { type: string, example: Cairo }
+                mobileNumber: { type: string, example: "+201001234567" }
+                description: { type: string, example: "Premium event management company." }
+                website: { type: string, format: uri, example: "https://nileevents.com" }
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/profile/logo:
+    patch:
+      tags: [Organizers]
+      summary: Upload company logo
+      description: |
+        Uploads the organizer's company logo image to Cloudinary (stored in the
+        `portfolioPicture` field). Send as `multipart/form-data` with field `logo`.
+      operationId: uploadOrganizerLogo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [logo]
+              properties:
+                logo:
+                  type: string
+                  format: binary
+                  description: Image file for the company logo.
+      responses:
+        '200':
+          description: Company logo updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          logo: { $ref: '#/components/schemas/CloudinaryFile' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /organizer/events:
+    post:
+      tags: [Organizers]
+      summary: Create event
+      description: Creates a new event. Status defaults to `open` and `hiredTalents` starts empty.
+      operationId: createEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+            example:
+              title: Annual Corporate Gala
+              category: corporate
+              eventDate: "2026-08-20T19:00:00Z"
+              applicationDeadline: "2026-08-10T23:59:59Z"
+              startTime: "19:00"
+              endTime: "23:00"
+              location: Cairo Marriott Hotel
+              requiredCount: 10
+              genderPreference: any
+              budget: 5000
+              dressCode: Formal attire
+              notes: Arabic-speaking ushers preferred
+      responses:
+        '201':
+          description: Event created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    get:
+      tags: [Organizers]
+      summary: Get own events
+      description: Returns a paginated list of the authenticated organizer's own events.
+      operationId: getOrganizerEvents
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, confirmed, completed, cancelled]
+          description: Filter by event status.
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated events list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEvents'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /organizer/events/{id}:
+    get:
+      tags: [Organizers]
+      summary: Get event detail
+      description: Returns full details of a single event owned by the organizer.
+      operationId: getOrganizerEventById
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Event detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Organizers]
+      summary: Update event
+      description: |
+        Updates any of the allowed event fields. Only the organizer who owns the event
+        can update it.
+      operationId: updateEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEventRequest'
+      responses:
+        '200':
+          description: Event updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Organizers]
+      summary: Delete own event (US-NEW)
+      description: |
+        Permanently deletes an event and **all its applications**.
+        Only the owning organizer can delete their event.
+      operationId: deleteOrganizerEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Event deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/close:
+    patch:
+      tags: [Organizers]
+      summary: Close event (confirm)
+      description: |
+        Sets the event status to `confirmed`, closing it for new applications.
+      operationId: closeEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Event closed for new applications
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/applicants:
+    get:
+      tags: [Organizers]
+      summary: View event applicants
+      description: |
+        Returns all applications for a specific event with enriched talent info
+        and referrer name.
+      operationId: getEventApplicants
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: List of applicants with talent details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Application'
+                            - type: object
+                              properties:
+                                talent: { $ref: '#/components/schemas/User' }
+                                referredByName: { type: string, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/attendance:
+    get:
+      tags: [Organizers]
+      summary: Get event attendance
+      operationId: getEventAttendance
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Attendance records with usher details
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Organizers]
+      summary: Mark attendance
+      description: |
+        Records or updates attendance for a hired talent. Business rules:
+        - **FR-ATT-02**: Can only mark attendance after the application deadline or when event is confirmed.
+        - Updates the talent's `consecutiveGoodEvents` counter (BR-07).
+        - Resets the late-excuse counter after 5 consecutive good events (BR-06).
+        - Triggers auto-verify check (FR-VER-01).
+      operationId: markAttendance
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [talentId, status]
+              properties:
+                talentId:
+                  type: string
+                  format: uuid
+                  example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
+                status:
+                  type: string
+                  enum: [present, absent, late]
+                  example: present
+                checkInTime:
+                  type: string
+                  format: date-time
+                  example: "2026-08-20T19:15:00Z"
+      responses:
+        '200':
+          description: Attendance marked
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Attendance' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/reviews:
+    get:
+      tags: [Organizers]
+      summary: Get event reviews
+      operationId: getEventReviews
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Reviews submitted for this event
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Organizers]
+      summary: Review & rate talent
+      description: |
+        Submits a review and star rating (1–5) for a hired talent after the event.
+        One review per organizer per talent per event is allowed.
+        Automatically recalculates the talent's average `rate` and triggers
+        auto-verify check (FR-VER-01).
+      operationId: reviewTalent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [talentId, rating]
+              properties:
+                talentId:
+                  type: string
+                  format: uuid
+                  example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  example: 5
+                comment:
+                  type: string
+                  maxLength: 500
+                  example: "Excellent performance, very professional!"
+      responses:
+        '201':
+          description: Review submitted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Review' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/referrals:
+    get:
+      tags: [Organizers]
+      summary: Get event referrals
+      description: Returns all referrals for a specific event with enriched referrer and referred talent data.
+      operationId: getEventReferrals
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Referrals list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Referral' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/applications/{applicationId}/status:
+    patch:
+      tags: [Organizers]
+      summary: Accept or reject an applicant
+      description: |
+        Updates an application status to `accepted` or `rejected`.
+        - Accepting adds the talent to `event.hiredTalents`.
+        - Rejecting removes the talent from `event.hiredTalents`.
+      operationId: updateApplicationStatus
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+          description: UUID of the application to update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [accepted, rejected]
+                  example: accepted
+      responses:
+        '200':
+          description: Application status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Application' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/talents:
+    get:
+      tags: [Organizers]
+      summary: Search talent directory
+      description: |
+        Returns a paginated list of active (non-blocked) ushers filtered by
+        city, event category, and/or minimum experience years.
+      operationId: searchTalents
+      parameters:
+        - name: city
+          in: query
+          schema: { type: string }
+          description: City name (case-insensitive partial match).
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+          description: Event category the talent specializes in.
+        - name: experience
+          in: query
+          schema: { type: integer, minimum: 0 }
+          description: Minimum years of experience.
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated talent list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /organizer/direct-book:
+    post:
+      tags: [Organizers]
+      summary: Direct book a talent
+      description: |
+        Directly books (auto-accepts) a talent to an open event without the
+        talent needing to apply first. Business rules:
+        - **BR-12**: Direct booking is auto-accepted.
+        - **BR-01**: Cannot book a talent who already has an application for the event.
+      operationId: directBookTalent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId, talentId]
+              properties:
+                eventId:
+                  type: string
+                  format: uuid
+                  example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                talentId:
+                  type: string
+                  format: uuid
+                  example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
+      responses:
+        '201':
+          description: Talent directly booked and accepted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Application' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/supervisor:
+    patch:
+      tags: [Organizers]
+      summary: Assign / remove event supervisor (US-NEW)
+      description: |
+        Adds or removes a supervisor (must be `organizer_supervisor` role and
+        belong to the same company) from the event's supervisor list.
+      operationId: assignSupervisor
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [supervisorUserId]
+              properties:
+                supervisorUserId:
+                  type: string
+                  format: uuid
+                  example: "abc45f64-1234-4562-b3fc-2c963f66afa6"
+                add:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: Supervisor assigned / removed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Staff Management ─────────────────────────────────────────────────────────
+  /organizer/staff:
+    get:
+      tags: [Organizers]
+      summary: Get staff members
+      description: Returns all staff members (member/supervisor) linked to the authenticated organizer.
+      operationId: getStaffMembers
+      responses:
+        '200':
+          description: Staff list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/StaffMember' }
+                      count: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Organizers]
+      summary: Invite staff member
+      description: Creates a new staff member linked to the authenticated organizer's company.
+      operationId: inviteStaffMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fullName, email]
+              properties:
+                fullName:
+                  type: string
+                  example: Mohamed Hassan
+                email:
+                  type: string
+                  format: email
+                  example: staff@company.com
+                password:
+                  type: string
+                  minLength: 6
+                  description: Defaults to `member123` if omitted.
+                role:
+                  type: string
+                  enum: [organizer_member, organizer_supervisor]
+                  default: organizer_member
+      responses:
+        '201':
+          description: Staff member created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StaffMember' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /organizer/staff/{id}:
+    put:
+      tags: [Organizers]
+      summary: Update staff member
+      description: Updates a staff member's fullName, email, password, or role.
+      operationId: updateStaffMember
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                fullName: { type: string }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 6 }
+                role:
+                  type: string
+                  enum: [organizer_member, organizer_supervisor]
+      responses:
+        '200':
+          description: Staff member updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StaffMember' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Organizers]
+      summary: Remove staff member
+      operationId: removeStaffMember
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Staff member removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/staff/{id}/block:
+    patch:
+      tags: [Organizers]
+      summary: Block staff member
+      operationId: blockStaffMember
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Staff member blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /organizer/staff/{id}/unblock:
+    patch:
+      tags: [Organizers]
+      summary: Unblock staff member
+      operationId: unblockStaffMember
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Staff member unblocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── New Usher Endpoints ──────────────────────────────────────────────────────
+  /usher/dashboard:
+    get:
+      tags: [Ushers]
+      summary: Usher dashboard stats (US-NEW)
+      description: Returns key stats for the authenticated usher's dashboard.
+      operationId: getUsherDashboard
+      responses:
+        '200':
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          reliabilityScore: { type: number, example: 95.5 }
+                          ratingAverage: { type: number, example: 4.3 }
+                          totalRatings: { type: integer, example: 12 }
+                          upcomingEventsCount: { type: integer, example: 2 }
+                          completedEventsCount: { type: integer, example: 10 }
+                          pendingApplications: { type: integer, example: 3 }
+                          acceptedApplications: { type: integer, example: 5 }
+                          upcomingEvents:
+                            type: array
+                            items: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/referrals/pending:
+    get:
+      tags: [Ushers]
+      summary: Get pending referrals received (US-NEW)
+      description: Returns all pending referrals where the authenticated usher is the referred talent.
+      operationId: getMyPendingReferrals
+      responses:
+        '200':
+          description: Pending referrals
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Referral'
+                            - type: object
+                              properties:
+                                event: { $ref: '#/components/schemas/Event' }
+                                referrer: { $ref: '#/components/schemas/User' }
+                      count: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/referrals/{referralId}/accept:
+    patch:
+      tags: [Ushers]
+      summary: Accept a referral (US-NEW)
+      description: |
+        Referred talent accepts a pending referral. This creates/updates their
+        application for the event with `referredBy` tagged.
+      operationId: acceptReferral
+      parameters:
+        - name: referralId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Referral accepted, application created/updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Application' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/referrals/{referralId}/decline:
+    patch:
+      tags: [Ushers]
+      summary: Decline a referral (US-NEW)
+      description: Referred talent declines a pending referral.
+      operationId: declineReferral
+      parameters:
+        - name: referralId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Referral declined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/profile/payment-methods:
+    post:
+      tags: [Ushers]
+      summary: Add payment method (US-NEW)
+      description: Adds a new payment method to the usher's profile. First method is auto-set as default.
+      operationId: addPaymentMethod
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, numberOrDetail]
+              properties:
+                provider:
+                  type: string
+                  example: "Vodafone Cash"
+                numberOrDetail:
+                  type: string
+                  example: "01012345678"
+      responses:
+        '201':
+          description: Payment method added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/PaymentMethod' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /usher/profile/payment-methods/{methodId}:
+    delete:
+      tags: [Ushers]
+      summary: Delete payment method (US-NEW)
+      description: Removes a payment method. If the default is deleted, the next method becomes default.
+      operationId: deletePaymentMethod
+      parameters:
+        - name: methodId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Payment method deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/PaymentMethod' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/profile/payment-methods/{methodId}/default:
+    patch:
+      tags: [Ushers]
+      summary: Set default payment method (US-NEW)
+      description: Sets a specific payment method as the default; unsets all others.
+      operationId: setDefaultPaymentMethod
+      parameters:
+        - name: methodId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Default updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/PaymentMethod' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── ADMINS ──────────────────────────────────────────────────────────────────
+  /admin/dashboard:
+    get:
+      tags: [Admins]
+      summary: Admin dashboard
+      description: |
+        Returns platform-wide stats: user counts, event counts by status,
+        flagged talents (lateExcuseCount ≥ 5), recent events, and top-rated talents.
+      operationId: getAdminDashboard
+      responses:
+        '200':
+          description: Dashboard statistics
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          stats:
+                            type: object
+                            properties:
+                              totalUsers: { type: integer }
+                              totalTalents: { type: integer }
+                              totalOrganizers: { type: integer }
+                              totalEvents: { type: integer }
+                              openEvents: { type: integer }
+                              completedEvents: { type: integer }
+                              cancelledEvents: { type: integer }
+                          flaggedTalents:
+                            type: array
+                            items: { $ref: '#/components/schemas/User' }
+                          recentEvents:
+                            type: array
+                            items: { $ref: '#/components/schemas/Event' }
+                          topRatedTalents:
+                            type: array
+                            items: { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users:
+    get:
+      tags: [Admins]
+      summary: Get all users
+      description: |
+        Returns a paginated list of all users. Filterable by `role` and searchable
+        by `fullName` or `email` via the `search` query param.
+      operationId: adminGetAllUsers
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Search by full name or email (case-insensitive).
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [usher, organizer, admin, blocked, all]
+          description: Filter by role (use `blocked` to filter blocked users).
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated users list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Admins]
+      summary: Invite / create a user (US-309)
+      description: |
+        Admin creates a user account directly with a specified role. The account
+        is pre-verified (`isEmailVerified: true`). Useful for onboarding staff or
+        organizers without them going through the public registration flow.
+      operationId: adminInviteUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                fullName:
+                  type: string
+                  example: Sara Ahmed
+                email:
+                  type: string
+                  format: email
+                  example: sara@example.com
+                password:
+                  type: string
+                  minLength: 6
+                  description: Defaults to `Password@123` if omitted.
+                role:
+                  type: string
+                  enum: [usher, organizer, organizer_member, organizer_supervisor, admin]
+                  example: organizer
+                city:
+                  type: string
+                  example: Cairo
+                mobileNumber:
+                  type: string
+                  example: "+201234567890"
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/User' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/ushers:
+    get:
+      tags: [Admins]
+      summary: Get all ushers
+      description: Returns a paginated list of all users with role `usher`.
+      operationId: adminGetUshers
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated ushers list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/organizers:
+    get:
+      tags: [Admins]
+      summary: Get all organizers
+      description: Returns a paginated list of all users with role `organizer`.
+      operationId: adminGetOrganizers
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated organizers list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users/{id}/block:
+    patch:
+      tags: [Admins]
+      summary: Block a user
+      description: |
+        Blocks a user account. Business rules:
+        - **BR-09**: Admin accounts cannot be blocked.
+        - An admin cannot block themselves.
+      operationId: blockUser
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: User blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/unblock:
+    patch:
+      tags: [Admins]
+      summary: Unblock a user
+      description: Unblocks a user account and sets status back to `verified`.
+      operationId: unblockUser
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: User unblocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/verify:
+    patch:
+      tags: [Admins]
+      summary: Verify a user
+      description: Manually sets a user's `isVerified` flag to `true`.
+      operationId: verifyUser
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: User verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/unverify:
+    patch:
+      tags: [Admins]
+      summary: Unverify a user
+      description: Sets a user's `isVerified` flag to `false`.
+      operationId: unverifyUser
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: User unverified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}:
+    delete:
+      tags: [Admins]
+      summary: Delete a user (US-310)
+      description: |
+        Permanently deletes a user and their applications. Business rules:
+        - Cannot delete own admin account.
+        - Cannot delete other admin accounts.
+      operationId: adminDeleteUser
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/users/{id}/status:
+    patch:
+      tags: [Admins]
+      summary: Update user status (legacy)
+      description: |
+        Legacy endpoint — sets the user's `status` field directly.
+        Cannot be used on admin accounts.
+      operationId: updateUserStatus
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [pending, verified, blocked]
+                  example: blocked
+      responses:
+        '200':
+          description: User status updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/ushers/{id}/reset-excuses:
+    post:
+      tags: [Admins]
+      summary: Reset usher late excuses
+      description: |
+        Resets the `lateExcuseCount` and `consecutiveGoodEvents` counters
+        for a usher account.
+      operationId: resetExcuses
+      parameters:
+        - $ref: '#/components/parameters/UserIdParam'
+      responses:
+        '200':
+          description: Late excuse counter reset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          lateExcuseCount: { type: integer, example: 0 }
+                          consecutiveGoodEvents: { type: integer, example: 0 }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/events:
+    get:
+      tags: [Admins]
+      summary: Get all events (platform-wide)
+      description: |
+        Returns a paginated list of all events on the platform. Filterable by
+        `status` and searchable by `title` or `location`.
+      operationId: adminGetEvents
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Search by event title or location (case-insensitive).
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, confirmed, completed, cancelled, all]
+          description: Filter by event status.
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/SizeParam'
+        - $ref: '#/components/parameters/SortParam'
+      responses:
+        '200':
+          description: Paginated events list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedEvents'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/events/{id}/status:
+    patch:
+      tags: [Admins]
+      summary: Change event status
+      description: Manually overrides the status of any event on the platform.
+      operationId: adminUpdateEventStatus
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [open, confirmed, completed, cancelled]
+                  example: cancelled
+      responses:
+        '200':
+          description: Event status updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/events/{id}:
+    delete:
+      tags: [Admins]
+      summary: Delete event
+      description: |
+        Permanently deletes an event **and all its associated applications**.
+        This action is irreversible (BR-11).
+      operationId: adminDeleteEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Event and all related applications deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /usher/events/{id}:
+    get:
+      tags: [Ushers]
+      summary: Get an event available to the current usher
+      operationId: getUsherEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Event details }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /usher/talents:
+    get:
+      tags: [Ushers]
+      summary: List complete usher profiles for referrals
+      operationId: listUsherTalents
+      responses:
+        '200': { description: Paginated usher profiles }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /usher/profile/{id}/reviews:
+    get:
+      tags: [Ushers]
+      summary: Get reviews for an usher
+      operationId: getUsherReviews
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Reviews with event details }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /organizer/events/{id}/action-requests:
+    post:
+      tags: [Organizers]
+      summary: Request cancellation or deletion of a non-open event
+      operationId: requestEventAction
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestType]
+              properties:
+                requestType: { type: string, enum: [cancel, delete] }
+                reason: { type: string, maxLength: 1000 }
+      responses:
+        '201': { description: Request submitted for admin review }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Duplicate pending request or event can be changed directly }
+
+  /organizer/events/{id}/whatsapp-group:
+    post:
+      tags: [Organizers]
+      summary: Create a WhatsApp invitation link for hired ushers
+      operationId: createEventWhatsAppGroup
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '201': { description: Invitation link and included/excluded ushers }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { description: Link already exists or no ushers are hired }
+
+  /admin/event-action-requests:
+    get:
+      tags: [Admins]
+      summary: List event action requests
+      operationId: getEventActionRequests
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, approved, rejected, all], default: pending }
+      responses:
+        '200': { description: Action requests with organizer and event details }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/event-action-requests/{id}:
+    patch:
+      tags: [Admins]
+      summary: Approve or reject an event action request
+      operationId: resolveEventActionRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+      responses:
+        '200': { description: Request resolved }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { description: Request was already resolved }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List current user's notifications
+      operationId: getNotifications
+      responses:
+        '200': { description: Up to 100 newest notifications }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Notifications]
+      summary: Clear current user's notifications
+      operationId: clearNotifications
+      responses:
+        '200': { description: Notifications cleared }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/read-all:
+    patch:
+      tags: [Notifications]
+      summary: Mark all current user's notifications as read
+      operationId: markAllNotificationsRead
+      responses:
+        '200': { description: Notifications marked as read }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      operationId: markNotificationRead
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { description: Updated notification }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate a refresh session
+      description: Uses the HTTP-only refresh cookie and replaces both session cookies.
+      security: []
+      responses:
+        '200': { description: Session refreshed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current refresh session and clear cookies
+      security: []
+      responses:
+        '200': { description: Signed out }
+
+  /auth/referral-invites/{token}:
+    get:
+      tags: [Auth]
+      summary: Preview a signed referral invite
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Sanitized event and referrer preview }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /usher/referral-invites:
+    post:
+      tags: [Ushers]
+      summary: Create a signed referral invite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [eventId]
+              properties: { eventId: { type: string, format: uuid } }
+      responses:
+        '201': { description: Signed invite token }
+
+  /usher/referral-invites/{token}/redeem:
+    post:
+      tags: [Ushers]
+      summary: Redeem a referral invite for the authenticated usher
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Pending referral created }
+
+  /usher/profile/portfolio:
+    post:
+      tags: [Ushers]
+      summary: Upload a portfolio image
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties: { image: { type: string, format: binary } }
+      responses:
+        '201': { description: Updated portfolio }
+
+  /usher/profile/portfolio/{index}:
+    delete:
+      tags: [Ushers]
+      summary: Delete a portfolio image by zero-based index
+      parameters:
+        - { name: index, in: path, required: true, schema: { type: integer, minimum: 0 } }
+      responses:
+        '200': { description: Updated portfolio }
+
+  /organizer/events/{id}/photo:
+    patch:
+      tags: [Organizers]
+      summary: Upload or replace an event photo
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [photo]
+              properties: { photo: { type: string, format: binary } }
+      responses:
+        '200': { description: Updated event }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ──────────────────────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Short-lived JWT obtained from `POST /auth/login`. Browser clients normally
+        rely on the secure HTTP-only session cookies instead.
+
+  # ── Parameters ──────────────────────────────────────────────────────────────
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+      description: Page number (1-indexed).
+
+    SizeParam:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      description: Number of items per page.
+
+    SortParam:
+      name: sort
+      in: query
+      schema: { type: string, example: "-createdAt" }
+      description: |
+        Sort field. Prefix with `-` for descending order.
+        Example: `-createdAt` sorts newest first.
+
+    UserIdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: UUID of the user.
+
+    EventIdParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: UUID of the event.
+
+  # ── Responses ───────────────────────────────────────────────────────────────
+  responses:
+    BadRequest:
+      description: Validation error or bad input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            message: "Validation error: eventId is required"
+
+    Unauthorized:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            message: "Authentication required"
+
+    Forbidden:
+      description: Authenticated but not authorized for this action
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            message: "Insufficient permissions"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            message: "User not found"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example:
+            success: false
+            message: "Failed to send verification email. Please try again."
+
+  # ── Schemas ──────────────────────────────────────────────────────────────────
+  schemas:
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Operation completed successfully"
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Something went wrong"
+
+    PaginationMeta:
+      type: object
+      properties:
+        currentPage: { type: integer, example: 1 }
+        totalPages: { type: integer, example: 5 }
+        totalCount: { type: integer, example: 48 }
+
+    CloudinaryFile:
+      type: object
+      description: Image metadata returned by Cloudinary after upload.
+      properties:
+        secure_url:
+          type: string
+          format: uri
+          example: "https://res.cloudinary.com/example/image/upload/v123/ushers/profiles/abc.jpg"
+        public_id:
+          type: string
+          example: "ushers/profiles/abc"
+
+    User:
+      type: object
+      description: |
+        User model. Sensitive fields (password, otp, otpExpiry, otpAttempts,
+        lastOtpRequest, otpVerified) are never returned in responses.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
+        fullName:
+          type: string
+          example: Ahmed Ali
+        userName:
+          type: string
+          example: ahmed_ali
+        email:
+          type: string
+          format: email
+          example: ahmed@example.com
+        mobileNumber:
+          type: string
+          example: "+201234567890"
+        city:
+          type: string
+          example: Cairo
+        role:
+          type: string
+          enum: [usher, organizer, admin]
+        experience:
+          type: integer
+          example: 3
+        rate:
+          type: number
+          format: float
+          example: 4.7
+        isVerified:
+          type: boolean
+          example: true
+        isBlocked:
+          type: boolean
+          example: false
+        isEmailVerified:
+          type: boolean
+          example: true
+        status:
+          type: string
+          enum: [pending, verified, blocked]
+          example: verified
+        lateExcuseCount:
+          type: integer
+          example: 1
+        consecutiveGoodEvents:
+          type: integer
+          example: 3
+        languages:
+          type: array
+          items:
+            type: string
+            enum: [arabic, english, french, spanish, german, italian]
+          example: [arabic, english]
+        eventCategories:
+          type: array
+          items:
+            type: string
+            enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+          example: [wedding, corporate]
+        portfolioPicture:
+          $ref: '#/components/schemas/CloudinaryFile'
+        portfolio:
+          type: array
+          items: {}
+        organizationInfo:
+          type: object
+          nullable: true
+          description: Organizer-specific data (description, website).
+          properties:
+            description: { type: string }
+            website: { type: string, format: uri }
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        organizerId:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: Annual Corporate Gala
+        category:
+          type: string
+          enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+          example: corporate
+        status:
+          type: string
+          enum: [open, confirmed, completed, cancelled]
+          example: open
+        eventDate:
+          type: string
+          format: date-time
+          example: "2026-08-20T19:00:00Z"
+        applicationDeadline:
+          type: string
+          format: date-time
+          example: "2026-08-10T23:59:59Z"
+        startTime:
+          type: string
+          example: "19:00"
+        endTime:
+          type: string
+          example: "23:00"
+        location:
+          type: string
+          example: Cairo Marriott Hotel
+        requiredCount:
+          type: integer
+          example: 10
+        genderPreference:
+          type: string
+          enum: [male, female, any]
+          example: any
+        budget:
+          type: number
+          example: 5000
+        dressCode:
+          type: string
+          nullable: true
+          example: Formal attire
+        notes:
+          type: string
+          nullable: true
+          example: Arabic-speaking ushers preferred
+        hiredTalents:
+          type: array
+          items: { type: string, format: uuid }
+          description: List of hired talent UUIDs.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Application:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        talentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, accepted, rejected, excused]
+          example: pending
+        isDirect:
+          type: boolean
+          example: false
+          description: True if created by a direct-book action.
+        referredBy:
+          type: string
+          format: uuid
+          nullable: true
+          description: UUID of the talent who referred this applicant.
+        appliedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Attendance:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        talentId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [present, absent, late]
+          example: present
+        checkInTime:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        reviewerId:
+          type: string
+          format: uuid
+          description: UUID of the organizer who wrote the review.
+        reviewedUserId:
+          type: string
+          format: uuid
+          description: UUID of the usher being reviewed.
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
+        comment:
+          type: string
+          nullable: true
+          example: "Excellent performance!"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Referral:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        referrerTalentId:
+          type: string
+          format: uuid
+          description: UUID of the usher who made the referral.
+        referredTalentId:
+          type: string
+          format: uuid
+          description: UUID of the usher being referred.
+        status:
+          type: string
+          enum: [pending, accepted, declined]
+          example: pending
+        referrer:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            fullName: { type: string }
+        referred:
+          type: object
+          nullable: true
+          properties:
+            id: { type: string, format: uuid }
+            fullName: { type: string }
+            rate: { type: number }
+            isVerified: { type: boolean }
+            lateExcuseCount: { type: integer }
+        createdAt:
+          type: string
+          format: date-time
+
+    EventHistoryItem:
+      type: object
+      properties:
+        event: { $ref: '#/components/schemas/Event' }
+        applicationStatus:
+          type: string
+          enum: [accepted, excused]
+        attendanceStatus:
+          type: string
+          enum: [present, absent, late]
+          nullable: true
+        rating:
+          type: integer
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+
+    # ── Request Bodies ─────────────────────────────────────────────────────────
+    SignupRequest:
+      type: object
+      required: [fullName, userName, email, password, mobileNumber, city, experience, role]
+      properties:
+        fullName:
+          type: string
+          minLength: 3
+          maxLength: 50
+          example: Ahmed Ali
+        userName:
+          type: string
+          minLength: 3
+          maxLength: 30
+          example: ahmed_ali
+        email:
+          type: string
+          format: email
+          example: ahmed@example.com
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: StrongPass@123
+        mobileNumber:
+          type: string
+          pattern: '^(\+?\d{1,3}[- ]?)?\d{10}$'
+          example: "+201234567890"
+        city:
+          type: string
+          example: Cairo
+        experience:
+          type: integer
+          minimum: 0
+          example: 2
+        role:
+          type: string
+          enum: [usher, organizer, admin]
+          example: usher
+        rate:
+          type: number
+          minimum: 0
+          default: 0
+        languages:
+          type: array
+          items:
+            type: string
+            enum: [arabic, english, french, spanish, german, italian]
+        eventCategories:
+          type: array
+          items:
+            type: string
+            enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+        portfolio:
+          type: array
+          items: {}
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    UsherUpdateProfileRequest:
+      type: object
+      properties:
+        fullName: { type: string, example: Ahmed Ali }
+        city: { type: string, example: Alexandria }
+        experience: { type: integer, minimum: 0, example: 3 }
+        languages:
+          type: array
+          items:
+            type: string
+            enum: [arabic, english, french, spanish, german, italian]
+        eventCategories:
+          type: array
+          items:
+            type: string
+            enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+
+    CreateEventRequest:
+      type: object
+      required: [title, category, eventDate, applicationDeadline, startTime, endTime, location, requiredCount, budget]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 100
+        category:
+          type: string
+          enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+        eventDate:
+          type: string
+          format: date-time
+          description: Must be a future date.
+        applicationDeadline:
+          type: string
+          format: date-time
+          description: Must be before eventDate.
+        startTime:
+          type: string
+          example: "19:00"
+        endTime:
+          type: string
+          example: "23:00"
+        location:
+          type: string
+          example: Cairo Marriott Hotel
+        requiredCount:
+          type: integer
+          minimum: 1
+          example: 10
+        genderPreference:
+          type: string
+          enum: [male, female, any]
+          default: any
+        budget:
+          type: number
+          minimum: 0
+          example: 5000
+        dressCode:
+          type: string
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    UpdateEventRequest:
+      type: object
+      description: Any subset of the allowed event fields can be updated.
+      properties:
+        title: { type: string }
+        category:
+          type: string
+          enum: [wedding, corporate, club, festival, private_party, conference, exhibition, sport_event]
+        eventDate: { type: string, format: date-time }
+        applicationDeadline: { type: string, format: date-time }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string }
+        requiredCount: { type: integer, minimum: 1 }
+        genderPreference:
+          type: string
+          enum: [male, female, any]
+        budget: { type: number }
+        dressCode: { type: string }
+        notes: { type: string }
+
+    # ── Paginated Wrappers ─────────────────────────────────────────────────────
+    PaginatedUsers:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - $ref: '#/components/schemas/PaginationMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/User' }
+
+    PaginatedEvents:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - $ref: '#/components/schemas/PaginationMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Event' }
+
+    PaginatedApplications:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - $ref: '#/components/schemas/PaginationMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                allOf:
+                  - $ref: '#/components/schemas/Application'
+                  - type: object
+                    properties:
+                      event: { $ref: '#/components/schemas/Event' }
+                      referredByName: { type: string, nullable: true }
+
+    PaymentMethod:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID generated server-side
+          example: "a1b2c3d4-5678-90ab-cdef-1234567890ab"
+        provider:
+          type: string
+          example: "Vodafone Cash"
+        numberOrDetail:
+          type: string
+          example: "01012345678"
+        isDefault:
+          type: boolean
+          example: true
+
+    StaffMember:
+      type: object
+      description: A user with role `organizer_member` or `organizer_supervisor` linked to an organizer.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+          example: Mohamed Hassan
+        email:
+          type: string
+          format: email
+          example: staff@company.com
+        role:
+          type: string
+          enum: [organizer_member, organizer_supervisor]
+          example: organizer_member
+        isBlocked:
+          type: boolean
+          example: false
+        isVerified:
+          type: boolean
+          example: false
+        providerOwnerId:
+          type: string
+          format: uuid
+          description: ID of the organizer this staff belongs to
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
