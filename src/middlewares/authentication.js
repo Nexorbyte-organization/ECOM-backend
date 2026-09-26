@@ -2,7 +2,7 @@ import { User } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { TokenService } from '../utils/token.js';
 import { getMissingProfileFields } from '../utils/profileCompletion.js';
-import { getAccessToken } from '../utils/session.js';
+import { getAccessToken, tokenHashesMatch } from '../utils/session.js';
 
 export class AuthMiddleware {
   static isAuthenticated() {
@@ -16,6 +16,12 @@ export class AuthMiddleware {
         const user = await User.findByPk(payload.id);
         if (!user) {
           return next(new AppError('User Not Found', 401));
+        }
+
+        if (!payload.sessionHash || !user.refreshTokenHash
+          || !(user.refreshTokenExpiresAt > new Date())
+          || !tokenHashesMatch(payload.sessionHash, user.refreshTokenHash)) {
+          return next(new AppError('Session expired. Please sign in again.', 401));
         }
 
         // BR-10: Blocked users cannot access the platform
