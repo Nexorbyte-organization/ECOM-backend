@@ -14,7 +14,7 @@ const configuredOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL 
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
-const deployedOrigins = ['https://usher-swart.vercel.app'];
+const deployedOrigins = ['https://ecom-frontend-ruddy-theta.vercel.app/'];
 const developmentOrigins = ['http://localhost:3001', 'http://127.0.0.1:3001'];
 const isProduction = process.env.NODE_ENV === 'production' || process.env.APP_ENV === 'prod';
 const allowedOrigins = isProduction
