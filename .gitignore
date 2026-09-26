@@ -1,2 +1,7 @@
 /node_modules
 /.env
+
+# Local Codex browser tooling and private verification artifacts
+.agents/tools/playwright/node_modules/
+.agents/tools/playwright/.browsers/
+.playwright-cli/
