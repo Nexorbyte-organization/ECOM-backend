@@ -4,6 +4,7 @@ import { User, Event, Application, Attendance, Review, Referral, EventActionRequ
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
+import { UploadFolders } from '../utils/uploadFolders.js';
 import { ApiFeature } from '../utils/apiFeature.js';
 import { checkAndAutoVerify } from './usher.controller.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
@@ -94,7 +95,7 @@ export class OrganizerController {
         if (!user) return next(new AppError(messages.user.notfound, 404));
 
         const previousPublicId = user.portfolioPicture?.public_id;
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/logos');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.organizationLogo(user.id));
         user.portfolioPicture = uploaded;
         await user.save();
         if (previousPublicId && previousPublicId !== 'default_avatar') {
@@ -119,7 +120,7 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id: req.params.id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/events');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.eventPhoto(event.organizerId, event.id));
         const previousPublicId = event.photo?.public_id;
         event.photo = uploaded;
         await event.save();
