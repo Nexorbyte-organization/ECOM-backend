@@ -14,9 +14,9 @@ export class TokenService {
     return jwt.verify(token, secretKey);
   }
 
-  static generateAccessToken(user) {
+  static generateAccessToken(user, sessionHash) {
     return this.generateToken({
-      payload: { id: user.id, email: user.email, role: user.role, purpose: 'access' },
+      payload: { id: user.id, email: user.email, role: user.role, purpose: 'access', sessionHash },
       expiresIn: '15m',
     });
   }
