@@ -91,7 +91,10 @@ organizerRouter.post('/events/:id/whatsapp-group', ...ownerAuth, completeProfile
 organizerRouter.get('/events/:id/settlement-preview', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.previewEventSettlement));
 organizerRouter.get('/events/:id/settlement', ...workspaceAuth, ErrorHandler.asyncHandler(PaymentController.getEventSettlement));
 organizerRouter.post('/events/:id/settlement', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.createEventSettlement));
+organizerRouter.get('/events/:id/individual-settlements', ...workspaceAuth, ErrorHandler.asyncHandler(PaymentController.listIndividualSettlements));
+organizerRouter.post('/events/:id/ushers/:talentId/settlement', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.createIndividualSettlement));
 organizerRouter.patch('/settlements/:settlementId/lines/:lineId/cash-paid', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.markCashPaid));
+organizerRouter.post('/settlements/:settlementId/lines/:lineId/retry-payout', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.retryIndividualPayout));
 organizerRouter.get('/payment-cards', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.listOrganizerCards));
 organizerRouter.post('/payment-cards/enrollments', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.startCardEnrollment));
 organizerRouter.get('/payment-cards/enrollments/:enrollmentId', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.getCardEnrollment));
