@@ -132,7 +132,9 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 99);
+  assert.equal(routes.size, 108);
+  assert.ok(routes.has('organizerRouter:GET /events/:id/map'));
+  assert.ok(routes.has('usherRouter:GET /events/:id/map'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance'));
   assert.ok(routes.has('organizerRouter:POST /events/:id/attendance-qr'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance-qr'));
@@ -148,6 +150,9 @@ test('all frontend-alignment route groups are registered', async () => {
   assert.ok(routes.has('usherRouter:POST /attendance/check-in'));
   assert.ok(routes.has('organizerRouter:PATCH /events/:id/photo'));
   assert.ok(routes.has('organizerRouter:POST /events/:id/settlement'));
+  assert.ok(routes.has('organizerRouter:GET /events/:id/individual-settlements'));
+  assert.ok(routes.has('organizerRouter:POST /events/:id/ushers/:talentId/settlement'));
+  assert.ok(routes.has('organizerRouter:POST /settlements/:settlementId/lines/:lineId/retry-payout'));
   assert.ok(routes.has('organizerRouter:POST /payment-cards/enrollments'));
   assert.ok(routes.has('organizerRouter:GET /payment-cards/enrollments/:enrollmentId'));
   assert.ok(routes.has('organizerRouter:PATCH /payment-cards/:cardId/default'));

@@ -98,7 +98,7 @@ export const buildPayoutPayload = (line, talent) => {
     issuer: line.payoutMetadata?.issuer,
     amount,
     full_name: line.payoutMetadata?.fullName || talent.fullName,
-    client_reference_id: line.id,
+    client_reference_id: line.payoutAttempt ? `${line.id}-${line.payoutAttempt}` : line.id,
     customer_bears_fees: false,
   };
 
@@ -113,6 +113,17 @@ export const buildPayoutPayload = (line, talent) => {
     };
   }
   throw new PayoutRequestError('This settlement line does not have an automatic payout method');
+};
+
+export const classifyPayoutStatus = (status) => {
+  const value = String(status || '').toLowerCase();
+  if (['success', 'successful', 'paid', 'completed'].includes(value)) {
+    return { status: 'paid', retrySafe: false };
+  }
+  if (['failed', 'failure', 'rejected', 'cancelled', 'canceled', 'declined'].includes(value)) {
+    return { status: 'failed', retrySafe: true };
+  }
+  return { status: 'processing', retrySafe: false };
 };
 
 export const sendSandboxPayout = async (line, talent) => {

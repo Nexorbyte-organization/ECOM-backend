@@ -10,8 +10,8 @@ import {
   verifyTransactionHmac,
 } from '../src/services/paymob.service.js';
 import { decryptCardToken, encryptCardToken } from '../src/services/card-token.service.js';
-import { resolvePayoutMethod } from '../src/services/payout-method.service.js';
-import { buildPayoutPayload } from '../src/services/paymob-payout.service.js';
+import { resolvePayoutMethod, resolveSettlementPayoutMethod } from '../src/services/payout-method.service.js';
+import { buildPayoutPayload, classifyPayoutStatus, isPayoutSandboxConfigured } from '../src/services/paymob-payout.service.js';
 
 const setTestEnvironment = () => {
   process.env.PAYMOB_MODE = 'test';
@@ -105,6 +105,43 @@ test('settlement payout methods separate automatic and cash recipients', () => {
   assert.equal(cash.status, 'cash_due');
 });
 
+test('organization can choose cash for an usher with a valid payout account', () => {
+  const methods = [{ provider: 'Vodafone Cash', numberOrDetail: '01012345678', isDefault: true }];
+  const automatic = resolveSettlementPayoutMethod(methods, 'Ahmed Ali', false);
+  const cash = resolveSettlementPayoutMethod(methods, 'Ahmed Ali', true);
+  assert.equal(automatic.type, 'wallet');
+  assert.equal(automatic.status, 'queued');
+  assert.equal(cash.type, 'cash');
+  assert.equal(cash.status, 'cash_due');
+  assert.equal(cash.destination, null);
+});
+
+test('automatic payouts require all sandbox credentials before checkout', () => {
+  const names = [
+    'PAYMOB_PAYOUT_CLIENT_ID', 'PAYMOB_PAYOUT_CLIENT_SECRET',
+    'PAYMOB_PAYOUT_USERNAME', 'PAYMOB_PAYOUT_PASSWORD',
+  ];
+  const previous = names.map((name) => process.env[name]);
+  try {
+    names.forEach((name) => { process.env[name] = 'test-value'; });
+    assert.equal(isPayoutSandboxConfigured(), true);
+    delete process.env.PAYMOB_PAYOUT_PASSWORD;
+    assert.equal(isPayoutSandboxConfigured(), false);
+  } finally {
+    names.forEach((name, index) => {
+      if (previous[index] === undefined) delete process.env[name];
+      else process.env[name] = previous[index];
+    });
+  }
+});
+
+test('only a confirmed failed disbursement is safe for individual retry', () => {
+  assert.deepEqual(classifyPayoutStatus('success'), { status: 'paid', retrySafe: false });
+  assert.deepEqual(classifyPayoutStatus('rejected'), { status: 'failed', retrySafe: true });
+  assert.deepEqual(classifyPayoutStatus('pending'), { status: 'processing', retrySafe: false });
+  assert.deepEqual(classifyPayoutStatus(''), { status: 'processing', retrySafe: false });
+});
+
 test('intention charges digital payouts plus only the platform fee for cash ushers', () => {
   setTestEnvironment();
   const config = getPaymobTestConfig();
@@ -167,4 +204,10 @@ test('payout payloads keep Paymob fees on the platform side', () => {
   assert.equal(payload.amount, 950);
   assert.equal(payload.customer_bears_fees, false);
   assert.equal(payload.msisdn, '01012345678');
+  assert.equal(payload.client_reference_id, 'line-id');
+  assert.equal(buildPayoutPayload({
+    id: 'line-id', payoutAttempt: 1, usherAmountCents: 95000,
+    payoutMethodType: 'wallet', payoutDestination: '01012345678',
+    payoutMetadata: { issuer: 'vodafone', fullName: 'Ahmed Ali' },
+  }, { fullName: 'Ahmed Ali' }).client_reference_id, 'line-id-1');
 });
