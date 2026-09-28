@@ -132,7 +132,9 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 102);
+  assert.equal(routes.size, 108);
+  assert.ok(routes.has('organizerRouter:GET /events/:id/map'));
+  assert.ok(routes.has('usherRouter:GET /events/:id/map'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance'));
   assert.ok(routes.has('organizerRouter:POST /events/:id/attendance-qr'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance-qr'));

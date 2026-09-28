@@ -7,6 +7,8 @@ NotificationService persists first, then optionally sends escaped HTML email if 
 
 Settlement collection and usher payout state do not depend on notification persistence. A notification failure after a confirmed payment or payout does not mark the transfer failed or prevent remaining queued payouts.
 
+Assigning an usher to a map pin creates a notification naming the location and event, with a link to `/talent/events/:id/map`. Re-saving an existing assignment does not repeat the notification.
+
 ## Source entry points
 - `src/services/notification.service.js`
 - `src/controllers/notification.controller.js`

@@ -5,6 +5,8 @@
 - `organizer_member`, `organizer_supervisor`: company workspace reads plus decisions, direct booking, attendance/reviews, and action requests where routed. providerOwnerId resolves company ownership. Current event queries scope to company, not supervisor assignment.
 - `admin`: platform users/events/action requests and authenticated settlement lookup.
 
+Event maps: the organizer owner uploads the map and creates/edits/deletes pins and assignments; organizer staff can read the company map. An usher can fetch a map only while hired and assigned, and receives only their own pin details. Assignment accepts hired ushers only.
+
 Authentication rejects blocked accounts and staff with missing/non-organizer/blocked owners. Staff profile gates use the owner. Route role checks do not replace controller record-ownership checks.
 
 Sources: `src/utils/constant/enums.js`, `src/middlewares/authentication.js`, `src/routers/organizer.router.js`, `src/routers/usher.router.js`, `src/routers/admin.router.js`, `src/routers/payment.router.js`, `src/controllers/organizer.controller.js`.

@@ -286,7 +286,7 @@ export class UsherController {
             if (!application) return next(new AppError(messages.event.notfound, 404));
         }
 
-        return res.status(200).json({ success: true, data: eventForTalent(event, application?.status === 'accepted') });
+        return res.status(200).json({ success: true, data: eventForTalent(event, application?.status === 'accepted', req.authUser.id) });
     }
 
     static async checkInWithAttendanceQr(req, res, next) {
@@ -536,6 +536,9 @@ export class UsherController {
         await application.save();
 
         event.hiredTalents = event.hiredTalents.filter(id => id !== talentId);
+        event.mapPins = (event.mapPins || []).map((pin) => ({
+            ...pin, usherIds: (pin.usherIds || []).filter((id) => id !== talentId),
+        }));
         await event.save();
 
         const talent = await User.findByPk(talentId);

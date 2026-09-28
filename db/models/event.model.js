@@ -54,6 +54,15 @@ export const Event = sequelize.define(
       type: DataTypes.JSONB,
       allowNull: true,
     },
+    mapImage: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+    },
+    mapPins: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+    },
     requiredCount: {
       type: DataTypes.INTEGER,
       allowNull: false,
