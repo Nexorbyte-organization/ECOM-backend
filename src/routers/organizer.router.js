@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
 import { OrganizerController } from '../controllers/organizer.controller.js';
+import { EventMapController } from '../controllers/event-map.controller.js';
 import { StaffController } from '../controllers/staff.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
 import { ValidationMiddleware } from '../middlewares/validation.js';
@@ -39,6 +40,11 @@ organizerRouter.get('/events', ...workspaceAuth, ErrorHandler.asyncHandler(Organ
 
 // Get single event detail
 organizerRouter.get('/events/:id', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.getEventById));
+organizerRouter.get('/events/:id/map', ...workspaceAuth, ErrorHandler.asyncHandler(EventMapController.getOrganizationMap));
+organizerRouter.patch('/events/:id/map/image', ...ownerAuth, completeProfile, upload.single('map'), ErrorHandler.asyncHandler(EventMapController.uploadImage));
+organizerRouter.post('/events/:id/map/pins', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(EventMapController.createPin));
+organizerRouter.patch('/events/:id/map/pins/:pinId', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(EventMapController.updatePin));
+organizerRouter.delete('/events/:id/map/pins/:pinId', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(EventMapController.deletePin));
 
 // One attendance QR per event. It can only be created while applications are open.
 organizerRouter.post('/events/:id/attendance-qr', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.generateAttendanceQr));

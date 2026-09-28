@@ -47,6 +47,8 @@ export const migrateExistingSchema = async () => {
     await runStatements([
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "gatheringLocation" VARCHAR(255)`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "photo" JSONB`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "mapImage" JSONB`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "mapPins" JSONB NOT NULL DEFAULT '[]'::jsonb`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "specifyGenders" BOOLEAN NOT NULL DEFAULT FALSE`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "malesCount" INTEGER`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "femalesCount" INTEGER`,

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
 import { UsherController } from '../controllers/usher.controller.js';
+import { EventMapController } from '../controllers/event-map.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
 import { ValidationMiddleware } from '../middlewares/validation.js';
 import { ApplicationValidator, AttendanceValidator, PaymentMethodValidator } from '../validators/event.validator.js';
@@ -47,6 +48,7 @@ usherRouter.get('/applications/my', ...auth, ErrorHandler.asyncHandler(UsherCont
 // US-106: Get event history
 usherRouter.get('/events/history', ...auth, ErrorHandler.asyncHandler(UsherController.getMyEventHistory));
 usherRouter.get('/events/:id', ...auth, ErrorHandler.asyncHandler(UsherController.getEventById));
+usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapController.getUsherMap));
 
 // Event-day check-in from an organizer-displayed QR code.
 usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));
