@@ -39,6 +39,9 @@ export async function updateApplicationDecision({ application, event, status, tr
         }
     } else {
         event.hiredTalents = hiredTalents.filter((id) => id !== application.talentId);
+        event.mapPins = (event.mapPins || []).map((pin) => ({
+            ...pin, usherIds: (pin.usherIds || []).filter((id) => id !== application.talentId),
+        }));
     }
 
     application.status = status;
