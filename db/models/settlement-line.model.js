@@ -73,6 +73,16 @@ export const SettlementLine = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    payoutRetrySafe: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    payoutAttempt: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     paidAt: {
       type: DataTypes.DATE,
       allowNull: true,
@@ -82,7 +92,7 @@ export const SettlementLine = sequelize.define(
     timestamps: true,
     tableName: 'settlement_lines',
     indexes: [
-      { unique: true, fields: ['settlementId', 'talentId'] },
+      { name: 'settlement_lines_active_talent_unique', unique: true, fields: ['settlementId', 'talentId'], where: { deletedAt: null } },
       { fields: ['talentId', 'payoutStatus'] },
     ],
   },

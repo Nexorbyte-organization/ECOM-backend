@@ -1,4 +1,4 @@
-import { DataTypes } from 'sequelize';
+import { DataTypes, Op } from 'sequelize';
 import { sequelize } from '../connection.js';
 
 export const EventSettlement = sequelize.define(
@@ -12,8 +12,12 @@ export const EventSettlement = sequelize.define(
     eventId: {
       type: DataTypes.UUID,
       allowNull: false,
-      unique: true,
       references: { model: 'events', key: 'id' },
+    },
+    targetTalentId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: { model: 'users', key: 'id' },
     },
     organizerId: {
       type: DataTypes.UUID,
@@ -120,6 +124,8 @@ export const EventSettlement = sequelize.define(
     timestamps: true,
     tableName: 'event_settlements',
     indexes: [
+      { name: 'event_settlements_bulk_event_unique', unique: true, fields: ['eventId'], where: { targetTalentId: null } },
+      { name: 'event_settlements_individual_unique', unique: true, fields: ['eventId', 'targetTalentId'], where: { targetTalentId: { [Op.ne]: null } } },
       { fields: ['organizerId', 'collectionStatus'] },
       { fields: ['paymobOrderId'] },
       { fields: ['paymobTransactionId'] },

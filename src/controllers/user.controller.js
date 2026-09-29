@@ -24,13 +24,27 @@ const SAFE_USER_ATTRS = { exclude: [
     'refreshTokenHash', 'refreshTokenExpiresAt',
 ] };
 
-const issueSession = async (user, res) => {
-    const accessToken = TokenService.generateAccessToken(user);
+const issueSession = async (user, res, previousHash) => {
     const refreshToken = TokenService.generateRefreshToken(user);
-    await user.update({
+    const session = {
         refreshTokenHash: hashToken(refreshToken),
         refreshTokenExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    });
+    };
+    const accessToken = TokenService.generateAccessToken(user, session.refreshTokenHash);
+    if (previousHash) {
+        // Compare-and-swap prevents a stale refresh from replacing a newer login.
+        const [updated] = await User.update(session, {
+            where: {
+                id: user.id,
+                refreshTokenHash: previousHash,
+                refreshTokenExpiresAt: { [Op.gt]: new Date() },
+                isBlocked: false,
+            },
+        });
+        if (!updated) return null;
+    } else {
+        await user.update(session);
+    }
     setSessionCookies(res, { accessToken, refreshToken });
     return accessToken;
 };
@@ -84,6 +98,7 @@ export class UserController {
         const userExist = await User.findOne({
             where: { [Op.or]: duplicateChecks },
             attributes: ['email', 'userName', 'mobileNumber'],
+            paranoid: false,
             transaction
         });
 
@@ -340,7 +355,11 @@ export class UserController {
             return next(new AppError('Session expired', 401));
         }
 
-        const token = await issueSession(user, res);
+        const token = await issueSession(user, res, hashToken(refreshToken));
+        if (!token) {
+            clearSessionCookies(res);
+            return next(new AppError('Session expired', 401));
+        }
         return res.status(200).json({ success: true, token, data: { token, user: withProfileStatus(user) } });
     }
 
@@ -350,7 +369,7 @@ export class UserController {
             const payload = TokenService.verifyPurposeToken({ token: refreshToken, purpose: 'refresh' });
             await User.update(
                 { refreshTokenHash: null, refreshTokenExpiresAt: null },
-                { where: { id: payload.id } },
+                { where: { id: payload.id, refreshTokenHash: hashToken(refreshToken) } },
             );
         } catch {
             // Clearing cookies is idempotent even when the session has already expired.

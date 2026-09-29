@@ -4,6 +4,7 @@ import { User, Event, Application, Attendance, Review, Referral, EventActionRequ
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
+import { UploadFolders } from '../utils/uploadFolders.js';
 import { ApiFeature } from '../utils/apiFeature.js';
 import { checkAndAutoVerify } from './usher.controller.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
@@ -55,6 +56,7 @@ export class OrganizerController {
             const requestedMobile = mobileNumber ?? phone ?? null;
             const duplicate = requestedMobile ? await User.findOne({
                 where: { mobileNumber: requestedMobile, id: { [Op.ne]: userId } },
+                paranoid: false,
             }) : null;
             if (duplicate) return next(new AppError('This mobile number is already in use', 409));
             user.mobileNumber = requestedMobile;
@@ -94,7 +96,7 @@ export class OrganizerController {
         if (!user) return next(new AppError(messages.user.notfound, 404));
 
         const previousPublicId = user.portfolioPicture?.public_id;
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/logos');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.organizationLogo(user.id));
         user.portfolioPicture = uploaded;
         await user.save();
         if (previousPublicId && previousPublicId !== 'default_avatar') {
@@ -119,7 +121,7 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id: req.params.id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, 'ushers/events');
+        const uploaded = await CloudinaryService.uploadBuffer(req.file.buffer, UploadFolders.eventPhoto(event.organizerId, event.id));
         const previousPublicId = event.photo?.public_id;
         event.photo = uploaded;
         await event.save();
@@ -137,29 +139,28 @@ export class OrganizerController {
     static async getDashboard(req, res, next) {
         const organizerId = getOrganizerId(req.authUser);
 
-        const [totalEvents, openEvents, confirmedEvents, completedEvents, recentEvents] = await Promise.all([
-            Event.count({ where: { organizerId } }),
-            Event.count({ where: { organizerId, status: 'open' } }),
-            Event.count({ where: { organizerId, status: 'confirmed' } }),
-            Event.count({ where: { organizerId, status: 'completed' } }),
-            Event.findAll({ where: { organizerId }, order: [['createdAt', 'DESC']], limit: 5 }),
-        ]);
-
-        // Total hired count across all events
-        const allEvents = await Event.findAll({ where: { organizerId }, attributes: ['hiredTalents'] });
-        const totalHired = allEvents.reduce((sum, e) => sum + (e.hiredTalents?.length || 0), 0);
-
-        // Active events (open + confirmed) for display
-        const activeEvents = await Event.findAll({
-            where: { organizerId, status: { [Op.in]: ['open', 'confirmed'] } },
-            order: [['eventDate', 'ASC']],
+        // Read the small set of fields needed for totals once. Four separate
+        // count queries plus another scan made this request expensive on cold starts.
+        const allEvents = await Event.findAll({
+            where: { organizerId },
+            attributes: ['id', 'status', 'hiredTalents'],
         });
-
-        // Count pending applications across organizer's events
+        const totalEvents = allEvents.length;
+        const openEvents = allEvents.filter(e => e.status === 'open').length;
+        const confirmedEvents = allEvents.filter(e => e.status === 'confirmed').length;
+        const completedEvents = allEvents.filter(e => e.status === 'completed').length;
+        const totalHired = allEvents.reduce((sum, e) => sum + (e.hiredTalents?.length || 0), 0);
         const eventIds = allEvents.map(e => e.id).filter(Boolean);
-        const pendingApplicationsCount = eventIds.length
-            ? await Application.count({ where: { eventId: { [Op.in]: eventIds }, status: 'pending' } })
-            : 0;
+        const [recentEvents, activeEvents, pendingApplicationsCount] = await Promise.all([
+            Event.findAll({ where: { organizerId }, order: [['createdAt', 'DESC']], limit: 5 }),
+            Event.findAll({
+                where: { organizerId, status: { [Op.in]: ['open', 'confirmed'] } },
+                order: [['eventDate', 'ASC']],
+            }),
+            eventIds.length
+                ? Application.count({ where: { eventId: { [Op.in]: eventIds }, status: 'pending' } })
+                : Promise.resolve(0),
+        ]);
 
         return res.status(200).json({
             success: true,

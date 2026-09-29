@@ -1,5 +1,6 @@
 import { Op } from 'sequelize';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification } from '../../db/index.js';
+import { sequelize } from '../../db/connection.js';
+import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { ApiFeature } from '../utils/apiFeature.js';
@@ -270,7 +271,7 @@ export class AdminController {
         const role = normalizeRole(req.body.role);
         const providerOwnerId = req.body.providerOwnerId || req.body.providerProfileId || null;
 
-        const existing = await User.findOne({ where: { email: email.toLowerCase() } });
+        const existing = await User.findOne({ where: { email: email.toLowerCase() }, paranoid: false });
         if (existing) return next(new AppError('A user with this email already exists', 400));
 
         const hashedPassword = HashService.hashPassword({ password: password || 'Password@123' });
@@ -314,53 +315,62 @@ export class AdminController {
         if (!user) return next(new AppError(messages.user.notfound, 404));
         if (user.role === 'admin') return next(new AppError('Admin accounts cannot be deleted', 403));
 
-        if (user.role === 'organizer') {
-            const ownedEvents = await Event.findAll({ where: { organizerId: id }, attributes: ['id'] });
-            for (const event of ownedEvents) await EventService.deleteWithRelations(event.id);
-            const staff = await User.findAll({ where: { providerOwnerId: id }, attributes: ['id'] });
-            const staffIds = staff.map((member) => member.id);
-            if (staffIds.length) {
-                await Notification.destroy({ where: { userId: { [Op.in]: staffIds } } });
+        await sequelize.transaction(async (transaction) => {
+            if (user.role === 'organizer') {
+                const ownedEvents = await Event.findAll({ where: { organizerId: id }, attributes: ['id'], transaction });
+                for (const event of ownedEvents) await EventService.deleteWithRelations(event.id, { transaction });
+                const staff = await User.findAll({ where: { providerOwnerId: id }, attributes: ['id'], transaction });
+                const staffIds = staff.map((member) => member.id);
+                if (staffIds.length) {
+                    await Notification.destroy({ where: { userId: { [Op.in]: staffIds } }, transaction });
+                }
+                await User.destroy({ where: { providerOwnerId: id }, transaction });
             }
-            await User.destroy({ where: { providerOwnerId: id } });
-        }
 
-        if (user.role === 'organizer_supervisor') {
-            const assignedEvents = await Event.findAll({
-                where: {
-                    [Op.or]: [
-                        { supervisorId: id },
-                        { supervisorIds: { [Op.contains]: [id] } },
-                    ],
-                },
-            });
-            await Promise.all(assignedEvents.map(async (event) => {
-                event.supervisorIds = (event.supervisorIds || []).filter((userId) => userId !== id);
-                event.supervisorId = event.supervisorIds[0] || null;
-                await event.save();
-            }));
-        }
+            if (user.role === 'organizer_supervisor') {
+                const assignedEvents = await Event.findAll({
+                    where: {
+                        [Op.or]: [
+                            { supervisorId: id },
+                            { supervisorIds: { [Op.contains]: [id] } },
+                        ],
+                    },
+                    transaction,
+                });
+                await Promise.all(assignedEvents.map(async (event) => {
+                    event.supervisorIds = (event.supervisorIds || []).filter((userId) => userId !== id);
+                    event.supervisorId = event.supervisorIds[0] || null;
+                    await event.save({ transaction });
+                }));
+            }
 
-        if (user.role === 'usher') {
-            const hiredEvents = await Event.findAll({
-                where: { hiredTalents: { [Op.contains]: [id] } },
-            });
-            await Promise.all(hiredEvents.map(async (event) => {
-                event.hiredTalents = (event.hiredTalents || []).filter((userId) => userId !== id);
-                await event.save();
-            }));
-        }
+            if (user.role === 'usher') {
+                const hiredEvents = await Event.findAll({
+                    where: { hiredTalents: { [Op.contains]: [id] } },
+                    transaction,
+                });
+                await Promise.all(hiredEvents.map(async (event) => {
+                    event.hiredTalents = (event.hiredTalents || []).filter((userId) => userId !== id);
+                    await event.save({ transaction });
+                }));
+            }
 
-        await Promise.all([
-            Application.destroy({ where: { talentId: id } }),
-            Attendance.destroy({ where: { talentId: id } }),
-            Review.destroy({ where: { [Op.or]: [{ reviewerId: id }, { reviewedUserId: id }] } }),
-            Referral.destroy({ where: { [Op.or]: [{ referrerTalentId: id }, { referredTalentId: id }] } }),
-            EventActionRequest.destroy({ where: { organizerId: id } }),
-            Notification.destroy({ where: { userId: id } }),
-        ]);
+            await Promise.all([
+                Application.destroy({ where: { talentId: id }, transaction }),
+                Attendance.destroy({ where: { talentId: id }, transaction }),
+                Review.destroy({ where: { [Op.or]: [{ reviewerId: id }, { reviewedUserId: id }] }, transaction }),
+                Referral.destroy({ where: { [Op.or]: [{ referrerTalentId: id }, { referredTalentId: id }] }, transaction }),
+                EventActionRequest.destroy({ where: { organizerId: id }, transaction }),
+                Notification.destroy({ where: { userId: id }, transaction }),
+            ]);
 
-        await user.destroy();
+            await Promise.all([
+                EventSettlement.destroy({ where: { organizerId: id }, transaction }),
+                OrganizerCard.destroy({ where: { organizerId: id }, transaction }),
+                OrganizerCardEnrollment.destroy({ where: { organizerId: id }, transaction }),
+            ]);
+            await user.destroy({ transaction });
+        });
 
         return res.status(200).json({
             success: true,

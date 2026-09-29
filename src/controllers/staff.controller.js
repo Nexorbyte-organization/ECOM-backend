@@ -1,4 +1,5 @@
 import { Op } from 'sequelize';
+import { sequelize } from '../../db/connection.js';
 import { User, Event, Notification } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
@@ -9,7 +10,7 @@ import { NotificationService } from '../services/notification.service.js';
 const SAFE_STAFF_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified'] };
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
 
-const removeSupervisorAssignments = async (organizerId, supervisorId) => {
+const removeSupervisorAssignments = async (organizerId, supervisorId, options = {}) => {
     const assignedEvents = await Event.findAll({
         where: {
             organizerId,
@@ -18,12 +19,13 @@ const removeSupervisorAssignments = async (organizerId, supervisorId) => {
                 { supervisorIds: { [Op.contains]: [supervisorId] } },
             ],
         },
+        ...options,
     });
 
     await Promise.all(assignedEvents.map(async (event) => {
         event.supervisorIds = (event.supervisorIds || []).filter((id) => id !== supervisorId);
         event.supervisorId = event.supervisorIds[0] || null;
-        await event.save();
+        await event.save(options);
     }));
 };
 
@@ -60,7 +62,7 @@ export class StaffController {
         if (!organizer) return next(new AppError(messages.user.notfound, 404));
 
         // Check email not already in use
-        const existing = await User.findOne({ where: { email: email.toLowerCase() } });
+        const existing = await User.findOne({ where: { email: email.toLowerCase() }, paranoid: false });
         if (existing) return next(new AppError('A user with this email already exists', 400));
 
         const hashedPassword = HashService.hashPassword({ password: password || 'member123' });
@@ -180,9 +182,11 @@ export class StaffController {
         const member = await User.findOne({ where: { id, providerOwnerId: organizerId } });
         if (!member) return next(new AppError(messages.staff.notfound, 404));
 
-        await removeSupervisorAssignments(organizerId, member.id);
-        await Notification.destroy({ where: { userId: member.id } });
-        await member.destroy();
+        await sequelize.transaction(async (transaction) => {
+            await removeSupervisorAssignments(organizerId, member.id, { transaction });
+            await Notification.destroy({ where: { userId: member.id }, transaction });
+            await member.destroy({ transaction });
+        });
 
         return res.status(200).json({
             success: true,
