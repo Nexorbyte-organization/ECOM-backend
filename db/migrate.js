@@ -9,6 +9,14 @@ const runStatements = async (statements) => {
 export const migrateExistingSchema = async () => {
   if (sequelize.getDialect() !== 'postgres') return;
 
+  // Models are registered before migration. Existing rows remain active (NULL).
+  const queryGenerator = sequelize.getQueryInterface().queryGenerator;
+  for (const model of Object.values(sequelize.models)) {
+    if (!model.options.paranoid) continue;
+    const table = queryGenerator.quoteTable(model.getTableName());
+    await sequelize.query(`ALTER TABLE IF EXISTS ${table} ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP WITH TIME ZONE`);
+  }
+
   const [tables] = await sequelize.query(`
     SELECT
       to_regclass('public.users') IS NOT NULL AS "hasUsers",
@@ -95,6 +103,24 @@ export const migrateExistingSchema = async () => {
     await runStatements([
       `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutRetrySafe" BOOLEAN NOT NULL DEFAULT FALSE`,
       `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutAttempt" INTEGER NOT NULL DEFAULT 0`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT c.conname FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+           WHERE t.relname = 'settlement_lines' AND c.contype = 'u'
+             AND pg_get_constraintdef(c.oid) = 'UNIQUE ("settlementId", "talentId")'
+         LOOP EXECUTE format('ALTER TABLE "settlement_lines" DROP CONSTRAINT %I', item.conname); END LOOP;
+       END $$`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT i.relname AS index_name FROM pg_index x
+           JOIN pg_class i ON i.oid = x.indexrelid
+           JOIN pg_class t ON t.oid = x.indrelid
+           WHERE t.relname = 'settlement_lines' AND x.indisunique AND x.indnatts = 2
+             AND x.indpred IS NULL AND pg_get_indexdef(x.indexrelid) LIKE '%("settlementId", "talentId")%'
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = x.indexrelid)
+         LOOP EXECUTE format('DROP INDEX IF EXISTS %I', item.index_name); END LOOP;
+       END $$`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "settlement_lines_active_talent_unique"
+         ON "settlement_lines" ("settlementId", "talentId") WHERE "deletedAt" IS NULL`,
     ]);
   }
 };

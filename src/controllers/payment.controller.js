@@ -192,7 +192,7 @@ const processAutomaticPayouts = async (settlement, lineId = null) => {
     );
     if (!claimed) continue;
     line.payoutStatus = 'processing';
-    const talent = await User.findByPk(line.talentId);
+    const talent = await User.findByPk(line.talentId, { paranoid: false });
     if (!talent) {
       line.payoutStatus = 'failed';
       line.failureReason = 'Usher account not found';
@@ -219,7 +219,7 @@ const processAutomaticPayouts = async (settlement, lineId = null) => {
       line.failureReason = error.message;
     }
     await line.save();
-    if (line.payoutStatus === 'paid') {
+    if (line.payoutStatus === 'paid' && !talent.deletedAt) {
       try {
         await NotificationService.create({
           userId: talent.id,
@@ -558,6 +558,7 @@ export class PaymentController {
     card.isActive = false;
     card.isDefault = false;
     await card.save();
+    await card.destroy();
     if (wasDefault) {
       const replacement = await OrganizerCard.findOne({
         where: { organizerId: card.organizerId, isActive: true, isLive: false },
@@ -649,16 +650,23 @@ export class PaymentController {
         return next(new AppError('Invalid Paymob card-token HMAC', 401));
       }
       const settlement = await EventSettlement.findOne({
-        where: { paymobOrderId: String(obj.order_id), isLive: false },
+        where: { paymobOrderId: String(obj.order_id), isLive: false }, paranoid: false,
       });
       const enrollment = settlement ? null : await OrganizerCardEnrollment.findOne({
-        where: { paymobOrderId: String(obj.order_id) },
+        where: { paymobOrderId: String(obj.order_id) }, paranoid: false,
       });
       if (!settlement && !enrollment) return next(new AppError('No test checkout matches this card token', 404));
       const organizerId = settlement?.organizerId || enrollment.organizerId;
-      const existingCard = await OrganizerCard.findOne({ where: { paymobCardTokenId: String(obj.id) } });
+      const organizer = await User.findByPk(organizerId);
+      if (!organizer || settlement?.deletedAt || enrollment?.deletedAt) {
+        return res.status(200).json({ success: true, received: true, ignored: true });
+      }
+      const existingCard = await OrganizerCard.findOne({ where: { paymobCardTokenId: String(obj.id) }, paranoid: false });
       if (existingCard && existingCard.organizerId !== organizerId) {
         return next(new AppError('Card token is already assigned to another organization', 409));
+      }
+      if (existingCard?.deletedAt) {
+        return res.status(200).json({ success: true, received: true, ignored: true });
       }
       const encrypted = encryptCardToken(obj.token);
       await OrganizerCard.update(
@@ -723,10 +731,10 @@ export class PaymentController {
       extraSettlementId && { id: String(extraSettlementId) },
     ].filter(Boolean);
     const settlement = whereOptions.length
-      ? await EventSettlement.findOne({ where: { [Op.or]: whereOptions, isLive: false } })
+      ? await EventSettlement.findOne({ where: { [Op.or]: whereOptions, isLive: false }, paranoid: false })
       : null;
     if (!settlement) {
-      const enrollment = orderId ? await OrganizerCardEnrollment.findOne({ where: { paymobOrderId: orderId } }) : null;
+      const enrollment = orderId ? await OrganizerCardEnrollment.findOne({ where: { paymobOrderId: orderId }, paranoid: false }) : null;
       if (!enrollment) return next(new AppError('No test checkout matches this transaction', 404));
       if (String(obj.integration_id) !== String(getCardEnrollmentIntegrationId(config))) {
         return next(new AppError('Unexpected card setup Integration ID', 409));
@@ -761,7 +769,7 @@ export class PaymentController {
 
     if (settlement.collectionStatus === 'paid') {
       await processAutomaticPayouts(settlement);
-      if (!wasPaid) {
+      if (!wasPaid && !settlement.deletedAt) {
         try {
           await NotificationService.create({
             userId: settlement.organizerId,

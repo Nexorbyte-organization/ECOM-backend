@@ -9,6 +9,10 @@ void pg;
 export const sequelize = new Sequelize(process.env.PG_URI, {
     dialect: 'postgres',
     logging: false,
+    define: {
+        paranoid: true,
+        deletedAt: 'deletedAt',
+    },
     dialectOptions: {
         ssl: process.env.PG_SSL === 'true' ? { require: true, rejectUnauthorized: false } : false,
     },

@@ -98,6 +98,7 @@ export class UserController {
         const userExist = await User.findOne({
             where: { [Op.or]: duplicateChecks },
             attributes: ['email', 'userName', 'mobileNumber'],
+            paranoid: false,
             transaction
         });
 
