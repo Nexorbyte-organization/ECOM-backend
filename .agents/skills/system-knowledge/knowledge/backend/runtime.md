@@ -9,6 +9,8 @@ Core configuration requires PG_URI and JWT_SECRET_KEY (at least 32 characters). 
 
 Startup connects/migrates DB; do not run it as a documentation-only check. npm test and npm run lint verify relevant code changes. Contract changes may require npm run generate:openapi and generated-doc review.
 
+All Sequelize models inherit `paranoid: true` from `db/connection.js`. `deletedAt` is a nullable timestamp: `NULL` means active; destroy operations set it and retain the row. Normal model reads, primary-key lookups, lists, updates, and counts exclude deleted records. The startup migration adds the column to every registered existing table; new tables receive it through sync. No public include-deleted, restore, or hard-delete API is exposed. Existing user identity uniqueness remains global, including archived rows. JSON array edits and image replacement remain updates to their parent record.
+
 ## Source entry points
 - `index.js`
 - `src/initapp.js`

@@ -15,6 +15,8 @@ New event photos upload to `ECOM/organization/{organizerId}/events/{eventId}/pho
 
 Each event may also have a separate map image and named pins. The owner uploads or replaces a JPEG/PNG map (5 MB limit), then creates pins at percentage x/y coordinates and assigns hired usher IDs. Each usher can occupy only one pin per event; a pin may hold multiple ushers. Pin mutations lock the event row, and assignment removal during application rejection or excuse removes the usher from pins. New assignments create a notification and request email delivery with a link to the usher map page. Workspace staff can read the organization map; only the owner can change it. The usher map endpoint requires hired membership and an assigned pin, returns the full map image and only that usher's pin data, and does not expose other assignments. Map image/pins are excluded from ordinary talent event serialization.
 
+Event deletion soft deletes the event, applications, attendance, reviews, referrals, settlements, and normally its action requests in one transaction. Event photos/maps remain stored. Approved admin delete requests preserve the action-request history as before; subsequent normal event lookups return no event. Settlement lines remain available internally for reconciliation of already-started payments, while deleted settlements are excluded from normal API lookups.
+
 ## Source entry points
 - `src/routers/organizer.router.js`
 - `src/controllers/organizer.controller.js`

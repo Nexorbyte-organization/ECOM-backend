@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "O-Ushers API",
-    "description": "The **O-Ushers** platform connects event organizers with professional ushers (talents).\n\n## Roles\n| Role | Description |\n|------|-------------|\n| **Usher** | A talent who browses events, applies, and manages their profile |\n| **Organizer** | Posts events, manages applicants, marks attendance & reviews |\n| **Organizer Member** | Uses the organizer workspace without event or staff CRUD access |\n| **Organizer Supervisor** | Uses the organizer workspace and manages event operations |\n| **Admin** | Platform-level management: users, events, verification |\n\n## Authentication\nBrowser clients authenticate with secure HTTP-only cookies. API clients may also send the\nshort-lived access token returned by `POST /auth/login` as a Bearer token.\n\n## Pagination\nPaginated endpoints accept `page` and `size` query parameters and return:\n```json\n{ \"data\": [], \"currentPage\": 1, \"totalPages\": 5, \"totalCount\": 42 }\n```\n",
+    "description": "The **O-Ushers** platform connects event organizers with professional ushers (talents).\n\n## Roles\n| Role | Description |\n|------|-------------|\n| **Usher** | A talent who browses events, applies, and manages their profile |\n| **Organizer** | Posts events, manages applicants, marks attendance & reviews |\n| **Organizer Member** | Uses the organizer workspace without event or staff CRUD access |\n| **Organizer Supervisor** | Uses the organizer workspace and manages event operations |\n| **Admin** | Platform-level management: users, events, verification |\n\n## Authentication\nBrowser clients authenticate with secure HTTP-only cookies. API clients may also send the\nshort-lived access token returned by `POST /auth/login` as a Bearer token.\n\n## Deletion\nDatabase records use soft deletion: DELETE sets a nullable `deletedAt` timestamp\nand retains the row. Normal reads, lists, and counts exclude deleted records;\ndeleted accounts cannot log in or refresh sessions. Deleting an organization\nalso hides its staff, events, and related records. No public restore or\ninclude-deleted endpoint is provided.\n\n## Pagination\nPaginated endpoints accept `page` and `size` query parameters and return:\n```json\n{ \"data\": [], \"currentPage\": 1, \"totalPages\": 5, \"totalCount\": 42 }\n```\n",
     "version": "1.0.0",
     "contact": {
       "email": "ooushers@gmail.com"
@@ -4611,6 +4611,12 @@
             "type": "string",
             "format": "date-time"
           },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -4718,6 +4724,12 @@
             "type": "string",
             "format": "date-time"
           },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -4768,6 +4780,12 @@
             "type": "string",
             "format": "date-time"
           },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
+          },
           "updatedAt": {
             "type": "string",
             "format": "date-time"
@@ -4806,6 +4824,12 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
           },
           "updatedAt": {
             "type": "string",
@@ -4848,6 +4872,12 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
           },
           "updatedAt": {
             "type": "string",
@@ -4923,6 +4953,12 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
           }
         }
       },
@@ -5408,6 +5444,12 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "deletedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Soft deletion timestamp; normal responses only contain active records."
           },
           "updatedAt": {
             "type": "string",

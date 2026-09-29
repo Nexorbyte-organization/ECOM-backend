@@ -17,6 +17,13 @@ info:
     Browser clients authenticate with secure HTTP-only cookies. API clients may also send the
     short-lived access token returned by `POST /auth/login` as a Bearer token.
 
+    ## Deletion
+    Database records use soft deletion: DELETE sets a nullable `deletedAt` timestamp
+    and retains the row. Normal reads, lists, and counts exclude deleted records;
+    deleted accounts cannot log in or refresh sessions. Deleting an organization
+    also hides its staff, events, and related records. No public restore or
+    include-deleted endpoint is provided.
+
     ## Pagination
     Paginated endpoints accept `page` and `size` query parameters and return:
     ```json
@@ -2658,6 +2665,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time
@@ -2725,6 +2737,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time
@@ -2760,6 +2777,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time
@@ -2787,6 +2809,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time
@@ -2820,6 +2847,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time
@@ -2863,6 +2895,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
 
     EventHistoryItem:
       type: object
@@ -3120,6 +3157,11 @@ components:
         createdAt:
           type: string
           format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Soft deletion timestamp; normal responses only contain active records.
         updatedAt:
           type: string
           format: date-time

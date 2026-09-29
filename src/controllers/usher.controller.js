@@ -192,6 +192,7 @@ export class UsherController {
             const requestedMobile = mobileNumber ?? phoneNumber ?? null;
             const duplicate = requestedMobile ? await User.findOne({
                 where: { mobileNumber: requestedMobile, id: { [Op.ne]: authUserId } },
+                paranoid: false,
             }) : null;
             if (duplicate) return next(new AppError('This mobile number is already in use', 409));
             user.mobileNumber = requestedMobile;

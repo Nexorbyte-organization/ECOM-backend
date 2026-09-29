@@ -5,6 +5,8 @@ Owners invite, update, block/unblock, and remove members/supervisors. Staff reco
 
 Owner assigns/removes supervisors belonging to the same company. supervisorIds stores the list; supervisorId mirrors the first for compatibility. Assignment emits notifications. Current company event queries are not restricted by supervisor assignment.
 
+Removing a staff member now soft deletes the account and its notifications, and removes supervisor assignments in one transaction. Organization deletion also soft deletes its staff. Deleted staff are excluded from lists and cannot authenticate.
+
 ## Source entry points
 - `src/controllers/staff.controller.js`
 - `src/controllers/organizer.controller.js`
