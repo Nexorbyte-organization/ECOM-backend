@@ -56,6 +56,7 @@ export class OrganizerController {
             const requestedMobile = mobileNumber ?? phone ?? null;
             const duplicate = requestedMobile ? await User.findOne({
                 where: { mobileNumber: requestedMobile, id: { [Op.ne]: userId } },
+                paranoid: false,
             }) : null;
             if (duplicate) return next(new AppError('This mobile number is already in use', 409));
             user.mobileNumber = requestedMobile;

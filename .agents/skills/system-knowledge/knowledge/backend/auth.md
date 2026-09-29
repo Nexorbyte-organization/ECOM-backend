@@ -11,6 +11,8 @@ Access extraction prefers Authorization (Bearer or raw), then legacy token heade
 
 Forgot-password → OTP validation (three failed attempts) → purpose-bound reset token → reset-password. Auth endpoints are rate limited.
 
+Soft-deleted users are excluded from normal account lookups, so login, refresh, verification, password recovery, and authenticated requests cannot use them. Organization cascades also delete staff accounts. Existing requests that passed authentication before deletion may still finish. Signup duplicate checks include archived records because email, username, and mobile uniqueness remain global.
+
 ## Source entry points
 - `src/routers/user.router.js`
 - `src/controllers/user.controller.js`

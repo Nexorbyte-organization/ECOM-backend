@@ -17,6 +17,8 @@ After collection succeeds, the owner may retry a single digital payout only when
 
 Saved card tokens use AES-256-GCM with a key derived from the configured Paymob Test secret; optional PAYMOB_TOKEN_ENCRYPTION_KEY supports legacy decryption. Checkout accepts an owned active test card. Backend exposes card list/delete/verify, enrollment creation/status, and default selection. Enrollment creation is profile-gated; status lookup is owner-scoped and expired pending enrollments become failed. Verified card-token callbacks complete enrollment. Removing a default card selects the newest remaining active test card. External sandbox success still requires merchant configuration and end-to-end verification.
 
+Saved-card removal sets `deletedAt` as well as disabling the card and selecting another default. Organization deletion hides its cards, enrollments, and settlements; event deletion hides its settlements. Valid HMAC payment callbacks explicitly include archived checkouts so an already-started collection can still be recorded and payable lines processed. Internal payout identity lookup includes archived ushers; no new notification is sent to deleted accounts. Late card-token callbacks cannot recreate a removed card or create a card for a deleted organization/checkout. Settlement lines replaced during checkout retry are soft deleted; a partial unique index on `(settlementId, talentId)` where `deletedAt IS NULL` permits a new active line while retaining prior attempts.
+
 ## Source entry points
 - `src/controllers/payment.controller.js`
 - `src/routers/payment.router.js`

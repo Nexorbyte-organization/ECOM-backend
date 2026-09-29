@@ -92,7 +92,7 @@ export const SettlementLine = sequelize.define(
     timestamps: true,
     tableName: 'settlement_lines',
     indexes: [
-      { unique: true, fields: ['settlementId', 'talentId'] },
+      { name: 'settlement_lines_active_talent_unique', unique: true, fields: ['settlementId', 'talentId'], where: { deletedAt: null } },
       { fields: ['talentId', 'payoutStatus'] },
     ],
   },

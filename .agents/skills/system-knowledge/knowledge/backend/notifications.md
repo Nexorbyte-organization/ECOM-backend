@@ -9,6 +9,8 @@ Settlement collection and usher payout state do not depend on notification persi
 
 Assigning an usher to a map pin creates a notification naming the location and event, with a link to `/talent/events/:id/map`. Re-saving an existing assignment does not repeat the notification.
 
+Clearing notifications soft deletes them by setting `deletedAt`; cleared records disappear from lists and unread totals while remaining stored. User, staff, and organization deletion also soft delete their existing notifications.
+
 ## Source entry points
 - `src/services/notification.service.js`
 - `src/controllers/notification.controller.js`
