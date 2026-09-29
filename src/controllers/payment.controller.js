@@ -1,4 +1,5 @@
 import { Op } from 'sequelize';
+import { sequelize } from '../../db/connection.js';
 import {
   Attendance,
   Event,
@@ -23,8 +24,8 @@ import {
   decryptCardToken,
   encryptCardToken,
 } from '../services/card-token.service.js';
-import { resolvePayoutMethod } from '../services/payout-method.service.js';
-import { isPayoutSandboxConfigured, sendSandboxPayout } from '../services/paymob-payout.service.js';
+import { resolveSettlementPayoutMethod } from '../services/payout-method.service.js';
+import { classifyPayoutStatus, isPayoutSandboxConfigured, sendSandboxPayout } from '../services/paymob-payout.service.js';
 
 const PLATFORM_FEE_PERCENT = 5;
 
@@ -69,10 +70,12 @@ const loadEligibleUshers = async (event) => {
     .filter((entry) => entry.talent);
 };
 
-const buildLineDrafts = (eligibleUshers, budget) => {
+const buildLineDrafts = (eligibleUshers, budget, excludedTalentIds = new Set()) => {
   const amounts = calculateSettlementLineAmounts(budget);
   return eligibleUshers.map(({ attendance, talent }) => {
-    const payout = resolvePayoutMethod(talent.paymentMethods || [], talent.fullName);
+    const payout = resolveSettlementPayoutMethod(
+      talent.paymentMethods || [], talent.fullName, excludedTalentIds.has(talent.id),
+    );
     return {
       talentId: talent.id,
       talentName: talent.fullName,
@@ -103,6 +106,22 @@ const summarizeDrafts = (drafts) => drafts.reduce((summary, line) => ({
   platformFeeCents: 0,
   usherAmountCents: 0,
   cashDueAmountCents: 0,
+});
+
+const lineValues = (line, settlement, event) => ({
+  settlementId: settlement.id,
+  eventId: event.id,
+  talentId: line.talentId,
+  attendanceStatus: line.attendanceStatus,
+  grossAmountCents: line.grossAmountCents,
+  collectionAmountCents: line.collectionAmountCents,
+  platformFeeCents: line.platformFeeCents,
+  usherAmountCents: line.usherAmountCents,
+  payoutMethodType: line.payoutMethodType,
+  payoutProvider: line.payoutProvider,
+  payoutDestination: line.payoutDestination,
+  payoutMetadata: line.payoutMetadata,
+  payoutStatus: line.payoutStatus,
 });
 
 const publicLine = (line, talent = null) => {
@@ -155,9 +174,9 @@ const updateAggregatePayoutStatus = async (settlement) => {
   await settlement.save();
 };
 
-const processAutomaticPayouts = async (settlement) => {
+const processAutomaticPayouts = async (settlement, lineId = null) => {
   const lines = await SettlementLine.findAll({
-    where: { settlementId: settlement.id, payoutStatus: 'queued' },
+    where: { settlementId: settlement.id, payoutStatus: 'queued', ...(lineId ? { id: lineId } : {}) },
   });
   if (!lines.length || !isPayoutSandboxConfigured()) {
     await updateAggregatePayoutStatus(settlement);
@@ -167,23 +186,41 @@ const processAutomaticPayouts = async (settlement) => {
   settlement.payoutStatus = 'processing';
   await settlement.save();
   for (const line of lines) {
+    const [claimed] = await SettlementLine.update(
+      { payoutStatus: 'processing' },
+      { where: { id: line.id, payoutStatus: 'queued' } },
+    );
+    if (!claimed) continue;
+    line.payoutStatus = 'processing';
     const talent = await User.findByPk(line.talentId);
     if (!talent) {
       line.payoutStatus = 'failed';
       line.failureReason = 'Usher account not found';
+      line.payoutRetrySafe = false;
       await line.save();
       continue;
     }
 
-    line.payoutStatus = 'processing';
-    await line.save();
     try {
       const payout = await sendSandboxPayout(line, talent);
       line.paymobPayoutTransactionId = payout.transactionId;
       line.failureReason = payout.description;
-      if (['success', 'successful', 'paid', 'completed'].includes(payout.status)) {
-        line.payoutStatus = 'paid';
+      const outcome = classifyPayoutStatus(payout.status);
+      line.payoutStatus = outcome.status;
+      line.payoutRetrySafe = outcome.retrySafe;
+      if (outcome.status === 'paid') {
         line.paidAt = new Date();
+      } else if (outcome.status === 'processing' && !payout.description) {
+        line.failureReason = payout.description || `Paymob payout status is ${payout.status || 'unknown'}; verify before retrying`;
+      }
+    } catch (error) {
+      line.payoutStatus = 'failed';
+      line.payoutRetrySafe = false;
+      line.failureReason = error.message;
+    }
+    await line.save();
+    if (line.payoutStatus === 'paid') {
+      try {
         await NotificationService.create({
           userId: talent.id,
           title: 'Event payment sent',
@@ -191,16 +228,10 @@ const processAutomaticPayouts = async (settlement) => {
           type: 'success',
           link: '/talent/events',
         });
-      } else if (['pending', 'processing', 'queued'].includes(payout.status)) {
-        line.payoutStatus = 'processing';
-      } else {
-        line.payoutStatus = 'failed';
+      } catch {
+        // A notification failure must not change a completed transfer into a failed payout.
       }
-    } catch (error) {
-      line.payoutStatus = 'failed';
-      line.failureReason = error.message;
     }
-    await line.save();
   }
   await updateAggregatePayoutStatus(settlement);
 };
@@ -213,6 +244,39 @@ const requireOwnedCompletedEvent = async (eventId, authUser) => {
     throw new AppError('The organization can pay ushers only after the event is completed', 409);
   }
   return event;
+};
+
+const getCheckoutCard = async (cardId, organizerId) => {
+  if (!cardId) return null;
+  if (typeof cardId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cardId)) {
+    throw new AppError('Invalid saved card ID', 400);
+  }
+  const card = await OrganizerCard.findOne({
+    where: { id: cardId, organizerId, isActive: true, isLive: false },
+  });
+  if (!card) throw new AppError('Saved card not found for this organization', 404);
+  return card;
+};
+
+const startCheckout = async ({ settlement, event, organizer, drafts, card }) => {
+  try {
+    const intention = await createPaymobIntention({
+      settlement, event, organizer, lines: drafts,
+      cardToken: card ? decryptCardToken(card) : undefined,
+    });
+    await settlement.update({
+      collectionStatus: 'pending',
+      paymobIntentionId: intention.intentionId,
+      paymobOrderId: intention.orderId,
+      paymobClientSecret: intention.clientSecret,
+      checkoutUrl: intention.checkoutUrl,
+      selectedCardId: card?.id || null,
+      expiresAt: intention.expiresAt,
+    });
+  } catch (error) {
+    await settlement.update({ collectionStatus: 'failed', collectionFailureReason: error.message });
+    throw error;
+  }
 };
 
 export class PaymentController {
@@ -251,104 +315,172 @@ export class PaymentController {
     const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
     const organizerId = getOrganizerId(req.authUser);
     const organizer = await User.findByPk(organizerId);
-    const drafts = buildLineDrafts(await loadEligibleUshers(event), event.budget);
+    const eligibleUshers = await loadEligibleUshers(event);
+    const excludedTalentIds = req.body?.excludedTalentIds ?? [];
+    if (!Array.isArray(excludedTalentIds)
+      || excludedTalentIds.some((id) => typeof id !== 'string')
+      || new Set(excludedTalentIds).size !== excludedTalentIds.length
+      || excludedTalentIds.some((id) => !eligibleUshers.some(({ talent }) => talent.id === id))) {
+      return next(new AppError('Excluded ushers must be unique eligible ushers for this event', 400));
+    }
+    const drafts = buildLineDrafts(eligibleUshers, event.budget, new Set(excludedTalentIds));
+    if (drafts.some((line) => line.payoutStatus === 'queued') && !isPayoutSandboxConfigured()) {
+      return next(new AppError('Automatic Paymob payouts are not configured. Connect the Payouts sandbox before collecting payment for ushers with payout accounts.', 503));
+    }
     const totals = summarizeDrafts(drafts);
     const cardId = req.body?.cardId || null;
-    if (cardId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cardId)) {
-      return next(new AppError('Invalid saved card ID', 400));
-    }
-    const card = cardId ? await OrganizerCard.findOne({
-      where: { id: cardId, organizerId, isActive: true, isLive: false },
-    }) : null;
-    if (cardId && !card) return next(new AppError('Saved card not found for this organization', 404));
+    const card = await getCheckoutCard(cardId, organizerId);
+    const prepared = await sequelize.transaction(async (transaction) => {
+      await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
+      const individual = await EventSettlement.findOne({
+        where: { eventId: event.id, targetTalentId: { [Op.ne]: null } }, transaction,
+      });
+      if (individual) throw new AppError('Individual checkout has started for this event. Pay the remaining ushers individually.', 409);
 
-    let settlement = await EventSettlement.findOne({ where: { eventId: event.id } });
-    if (settlement?.collectionStatus === 'paid') {
-      return next(new AppError('This event settlement has already been collected', 409));
-    }
-    if (
-      settlement?.collectionStatus === 'pending'
-      && settlement.checkoutUrl
-      && settlement.expiresAt
-      && new Date(settlement.expiresAt) > new Date()
-    ) {
-      if (cardId !== (settlement.selectedCardId || null)) {
-        return next(new AppError('An existing checkout is still active. Continue it or retry after it expires.', 409));
+      let settlement = await EventSettlement.findOne({
+        where: { eventId: event.id, targetTalentId: null }, transaction,
+      });
+      if (['paid', 'refunded'].includes(settlement?.collectionStatus)) {
+        throw new AppError('This event settlement has already been collected', 409);
       }
-      return res.status(200).json({ success: true, data: await serializeSettlement(settlement) });
-    }
+      if (settlement?.collectionStatus === 'not_started') {
+        throw new AppError('This event checkout is being prepared. Try again shortly.', 409);
+      }
+      if (settlement?.collectionStatus === 'pending') {
+        if (settlement.checkoutUrl && settlement.expiresAt && new Date(settlement.expiresAt) > new Date()) {
+          const existingLines = await SettlementLine.findAll({ where: { settlementId: settlement.id }, transaction });
+          if (cardId !== (settlement.selectedCardId || null)
+            || existingLines.length !== drafts.length
+            || existingLines.some((line) => {
+              const draft = drafts.find((entry) => entry.talentId === line.talentId);
+              return !draft || draft.payoutMethodType !== line.payoutMethodType
+                || draft.collectionAmountCents !== line.collectionAmountCents;
+            })) {
+            throw new AppError('An existing checkout is still active. Continue it or retry after it expires.', 409);
+          }
+          return { settlement, reused: true };
+        }
+        throw new AppError('Wait for Paymob to confirm the existing checkout before starting another payment.', 409);
+      }
 
-    if (!settlement) {
-      settlement = await EventSettlement.create({
-        eventId: event.id,
-        organizerId,
-        ...totals,
-        specialReference: `OO-SET-${event.id}-${Date.now()}`,
-        isLive: false,
-      });
-    } else {
-      await settlement.update({
-        ...totals,
-        collectionStatus: 'not_started',
-        payoutStatus: 'not_started',
-        specialReference: `OO-SET-${event.id}-${Date.now()}`,
-        paymobIntentionId: null,
-        paymobOrderId: null,
-        paymobTransactionId: null,
-        paymobClientSecret: null,
-        checkoutUrl: null,
-        selectedCardId: null,
-        expiresAt: null,
-        collectionFailureReason: null,
-        isLive: false,
-      });
-      await SettlementLine.destroy({ where: { settlementId: settlement.id } });
-    }
-
-    await SettlementLine.bulkCreate(drafts.map((line) => ({
-      settlementId: settlement.id,
-      eventId: event.id,
-      talentId: line.talentId,
-      attendanceStatus: line.attendanceStatus,
-      grossAmountCents: line.grossAmountCents,
-      collectionAmountCents: line.collectionAmountCents,
-      platformFeeCents: line.platformFeeCents,
-      usherAmountCents: line.usherAmountCents,
-      payoutMethodType: line.payoutMethodType,
-      payoutProvider: line.payoutProvider,
-      payoutDestination: line.payoutDestination,
-      payoutMetadata: line.payoutMetadata,
-      payoutStatus: line.payoutStatus,
-    })));
-
-    try {
-      const intention = await createPaymobIntention({
-        settlement, event, organizer, lines: drafts,
-        cardToken: card ? decryptCardToken(card) : undefined,
-      });
-      await settlement.update({
-        collectionStatus: 'pending',
-        paymobIntentionId: intention.intentionId,
-        paymobOrderId: intention.orderId,
-        paymobClientSecret: intention.clientSecret,
-        checkoutUrl: intention.checkoutUrl,
-        selectedCardId: card?.id || null,
-        expiresAt: intention.expiresAt,
-      });
-    } catch (error) {
-      await settlement.update({ collectionStatus: 'failed', collectionFailureReason: error.message });
-      throw error;
-    }
-
-    return res.status(201).json({ success: true, data: await serializeSettlement(settlement) });
+      if (!settlement) {
+        settlement = await EventSettlement.create({
+          eventId: event.id, organizerId, targetTalentId: null, ...totals,
+          specialReference: `OO-SET-${event.id}-${Date.now()}`, isLive: false,
+        }, { transaction });
+      } else {
+        await settlement.update({
+          ...totals,
+          collectionStatus: 'not_started', payoutStatus: 'not_started',
+          specialReference: `OO-SET-${event.id}-${Date.now()}`,
+          paymobIntentionId: null, paymobOrderId: null, paymobTransactionId: null,
+          paymobClientSecret: null, checkoutUrl: null, selectedCardId: null,
+          expiresAt: null, collectionFailureReason: null, isLive: false,
+        }, { transaction });
+        await SettlementLine.destroy({ where: { settlementId: settlement.id }, transaction });
+      }
+      await SettlementLine.bulkCreate(drafts.map((line) => lineValues(line, settlement, event)), { transaction });
+      return { settlement, reused: false };
+    });
+    if (!prepared.reused) await startCheckout({ settlement: prepared.settlement, event, organizer, drafts, card });
+    return res.status(prepared.reused ? 200 : 201).json({
+      success: true, data: await serializeSettlement(prepared.settlement),
+    });
   }
 
   static async getEventSettlement(req, res) {
     const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
-    const settlement = await EventSettlement.findOne({ where: { eventId: event.id } });
+    const settlement = await EventSettlement.findOne({ where: { eventId: event.id, targetTalentId: null } });
     return res.status(200).json({
       success: true,
       data: settlement ? await serializeSettlement(settlement) : null,
+    });
+  }
+
+  static async listIndividualSettlements(req, res) {
+    const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
+    const settlements = await EventSettlement.findAll({
+      where: { eventId: event.id, targetTalentId: { [Op.ne]: null } },
+      order: [['createdAt', 'ASC']],
+    });
+    return res.status(200).json({
+      success: true,
+      data: await Promise.all(settlements.map(serializeSettlement)),
+    });
+  }
+
+  static async createIndividualSettlement(req, res) {
+    const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
+    const organizerId = getOrganizerId(req.authUser);
+    const organizer = await User.findByPk(organizerId);
+    const eligible = (await loadEligibleUshers(event))
+      .find(({ talent }) => talent.id === req.params.talentId);
+    if (!eligible) throw new AppError('Usher is not eligible for payment on this event', 404);
+    const payInCash = req.body?.payInCash ?? false;
+    if (typeof payInCash !== 'boolean') throw new AppError('payInCash must be a boolean', 400);
+    const drafts = buildLineDrafts([eligible], event.budget,
+      payInCash ? new Set([eligible.talent.id]) : new Set());
+    if (drafts[0].payoutStatus === 'queued' && !isPayoutSandboxConfigured()) {
+      throw new AppError('Automatic Paymob payouts are not configured for this usher', 503);
+    }
+    const totals = summarizeDrafts(drafts);
+    const cardId = req.body?.cardId || null;
+    const card = await getCheckoutCard(cardId, organizerId);
+
+    const prepared = await sequelize.transaction(async (transaction) => {
+      await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
+      const bulk = await EventSettlement.findOne({
+        where: { eventId: event.id, targetTalentId: null }, transaction,
+      });
+      if (bulk && bulk.collectionStatus !== 'failed') {
+        throw new AppError('The event checkout may still collect this usher. Wait for a confirmed failure before paying individually.', 409);
+      }
+
+      let settlement = await EventSettlement.findOne({
+        where: { eventId: event.id, targetTalentId: eligible.talent.id }, transaction,
+      });
+      if (['paid', 'refunded'].includes(settlement?.collectionStatus)) {
+        throw new AppError('This usher has already been charged for this event', 409);
+      }
+      if (settlement?.collectionStatus === 'not_started') {
+        throw new AppError('This usher checkout is being prepared. Try again shortly.', 409);
+      }
+      if (settlement?.collectionStatus === 'pending') {
+        if (settlement.checkoutUrl && settlement.expiresAt && new Date(settlement.expiresAt) > new Date()) {
+          const existingLine = await SettlementLine.findOne({ where: { settlementId: settlement.id }, transaction });
+          if (cardId !== (settlement.selectedCardId || null)
+            || existingLine?.payoutMethodType !== drafts[0].payoutMethodType
+            || existingLine?.collectionAmountCents !== drafts[0].collectionAmountCents) {
+            throw new AppError('An existing usher checkout is active. Continue it with the same choices.', 409);
+          }
+          return { settlement, reused: true };
+        }
+        throw new AppError('Wait for Paymob to confirm the existing usher checkout before starting another payment.', 409);
+      }
+
+      if (!settlement) {
+        settlement = await EventSettlement.create({
+          eventId: event.id, organizerId, targetTalentId: eligible.talent.id,
+          ...totals, specialReference: `OO-USHER-${event.id}-${eligible.talent.id}-${Date.now()}`,
+          isLive: false,
+        }, { transaction });
+      } else {
+        await settlement.update({
+          ...totals,
+          collectionStatus: 'not_started', payoutStatus: 'not_started',
+          specialReference: `OO-USHER-${event.id}-${eligible.talent.id}-${Date.now()}`,
+          paymobIntentionId: null, paymobOrderId: null, paymobTransactionId: null,
+          paymobClientSecret: null, checkoutUrl: null, selectedCardId: null,
+          expiresAt: null, collectionFailureReason: null, isLive: false,
+        }, { transaction });
+        await SettlementLine.destroy({ where: { settlementId: settlement.id }, transaction });
+      }
+      await SettlementLine.create(lineValues(drafts[0], settlement, event), { transaction });
+      return { settlement, reused: false };
+    });
+    if (!prepared.reused) await startCheckout({ settlement: prepared.settlement, event, organizer, drafts, card });
+    return res.status(prepared.reused ? 200 : 201).json({
+      success: true, data: await serializeSettlement(prepared.settlement),
     });
   }
 
@@ -450,18 +582,58 @@ export class PaymentController {
     });
     if (!line) return next(new AppError('Settlement line not found', 404));
     if (line.payoutMethodType !== 'cash') return next(new AppError('This usher is configured for automatic payout', 409));
+    if (line.payoutStatus === 'paid') {
+      return res.status(200).json({ success: true, data: await serializeSettlement(settlement) });
+    }
     line.payoutStatus = 'paid';
     line.paidAt = new Date();
     line.failureReason = null;
     await line.save();
     await updateAggregatePayoutStatus(settlement);
-    await NotificationService.create({
-      userId: line.talentId,
-      title: 'Cash payment recorded',
-      message: `The organization recorded your ${line.usherAmountCents / 100} EGP event payment as paid in cash.`,
-      type: 'success',
-      link: '/talent/events',
+    try {
+      await NotificationService.create({
+        userId: line.talentId,
+        title: 'Cash payment recorded',
+        message: `The organization recorded your ${line.usherAmountCents / 100} EGP event payment as paid in cash.`,
+        type: 'success',
+        link: '/talent/events',
+      });
+    } catch {
+      // The recorded cash payment is authoritative even if notification persistence fails.
+    }
+    return res.status(200).json({ success: true, data: await serializeSettlement(settlement) });
+  }
+
+  static async retryIndividualPayout(req, res) {
+    const settlement = await EventSettlement.findByPk(req.params.settlementId);
+    if (!settlement) throw new AppError('Settlement not found', 404);
+    if (settlement.organizerId !== getOrganizerId(req.authUser)) {
+      throw new AppError('Not authorized to pay this usher', 403);
+    }
+    if (settlement.collectionStatus !== 'paid') {
+      throw new AppError('Complete the Paymob collection before paying this usher', 409);
+    }
+    if (!isPayoutSandboxConfigured()) {
+      throw new AppError('Automatic Paymob payouts are not configured', 503);
+    }
+    const line = await SettlementLine.findOne({
+      where: { id: req.params.lineId, settlementId: settlement.id },
     });
+    if (!line) throw new AppError('Settlement line not found', 404);
+    if (line.payoutMethodType === 'cash') {
+      throw new AppError('This usher is configured for cash payment', 409);
+    }
+    const [claimed] = await SettlementLine.update(
+      {
+        payoutStatus: 'queued', payoutRetrySafe: false, failureReason: null,
+        payoutAttempt: sequelize.literal('"payoutAttempt" + 1'),
+      },
+      { where: { id: line.id, settlementId: settlement.id, payoutStatus: 'failed', payoutRetrySafe: true } },
+    );
+    if (!claimed) {
+      throw new AppError('This payout cannot be retried until its previous result is confirmed failed', 409);
+    }
+    await processAutomaticPayouts(settlement, line.id);
     return res.status(200).json({ success: true, data: await serializeSettlement(settlement) });
   }
 
@@ -574,6 +746,9 @@ export class PaymentController {
     const wasPaid = settlement.collectionStatus === 'paid';
     const isPaid = obj.success === true && obj.pending === false && obj.error_occured === false;
     const isRefunded = obj.is_refunded === true;
+    if (wasPaid && !isPaid && !isRefunded) {
+      return res.status(200).json({ success: true, received: true, ignored: true });
+    }
     settlement.collectionStatus = isRefunded ? 'refunded' : isPaid ? 'paid' : obj.pending ? 'pending' : 'failed';
     settlement.paymobTransactionId = String(obj.id);
     settlement.paymentMethod = [obj.source_data?.type, obj.source_data?.sub_type].filter(Boolean).join(' — ') || null;
@@ -581,18 +756,24 @@ export class PaymentController {
     settlement.collectionFailureReason = settlement.collectionStatus === 'failed'
       ? obj.data?.message || 'Paymob reported an unsuccessful payment'
       : null;
-    if (isPaid && !settlement.collectedAt) settlement.collectedAt = new Date();
+    if (settlement.collectionStatus === 'paid' && !settlement.collectedAt) settlement.collectedAt = new Date();
     await settlement.save();
 
-    if (isPaid && !wasPaid) {
-      await NotificationService.create({
-        userId: settlement.organizerId,
-        title: 'Event payment received',
-        message: `Paymob confirmed the ${settlement.collectionAmountCents / 100} EGP test payment. Usher payouts are being processed.`,
-        type: 'success',
-        link: `/provider/events/${settlement.eventId}`,
-      });
+    if (settlement.collectionStatus === 'paid') {
       await processAutomaticPayouts(settlement);
+      if (!wasPaid) {
+        try {
+          await NotificationService.create({
+            userId: settlement.organizerId,
+            title: 'Event payment received',
+            message: `Paymob confirmed the ${settlement.collectionAmountCents / 100} EGP test payment. Usher payouts are being processed.`,
+            type: 'success',
+            link: `/provider/events/${settlement.eventId}`,
+          });
+        } catch {
+          // Collection and payout state remain authoritative if notification delivery fails.
+        }
+      }
     }
 
     return res.status(200).json({ success: true, received: true });

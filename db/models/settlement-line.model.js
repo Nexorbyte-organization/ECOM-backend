@@ -73,6 +73,16 @@ export const SettlementLine = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    payoutRetrySafe: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    payoutAttempt: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     paidAt: {
       type: DataTypes.DATE,
       allowNull: true,

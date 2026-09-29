@@ -65,6 +65,36 @@ export const migrateExistingSchema = async () => {
   if (settlementTables[0]?.hasSettlements) {
     await runStatements([
       `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "selectedCardId" UUID`,
+      `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "targetTalentId" UUID REFERENCES "users"("id")`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT c.conname FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+           WHERE t.relname = 'event_settlements' AND c.contype = 'u'
+             AND pg_get_constraintdef(c.oid) = 'UNIQUE ("eventId")'
+         LOOP EXECUTE format('ALTER TABLE "event_settlements" DROP CONSTRAINT %I', item.conname); END LOOP;
+       END $$`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT i.relname AS index_name FROM pg_index x
+           JOIN pg_class i ON i.oid = x.indexrelid
+           JOIN pg_class t ON t.oid = x.indrelid
+           WHERE t.relname = 'event_settlements' AND x.indisunique AND x.indnatts = 1
+             AND x.indpred IS NULL AND pg_get_indexdef(x.indexrelid) LIKE '%("eventId")%'
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = x.indexrelid)
+         LOOP EXECUTE format('DROP INDEX IF EXISTS %I', item.index_name); END LOOP;
+       END $$`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "event_settlements_bulk_event_unique"
+         ON "event_settlements" ("eventId") WHERE "targetTalentId" IS NULL`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "event_settlements_individual_unique"
+         ON "event_settlements" ("eventId", "targetTalentId") WHERE "targetTalentId" IS NOT NULL`,
+    ]);
+  }
+  const [lineTables] = await sequelize.query(`
+    SELECT to_regclass('public.settlement_lines') IS NOT NULL AS "hasLines"
+  `);
+  if (lineTables[0]?.hasLines) {
+    await runStatements([
+      `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutRetrySafe" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutAttempt" INTEGER NOT NULL DEFAULT 0`,
     ]);
   }
 };

@@ -55,3 +55,8 @@ export const resolvePayoutMethod = (paymentMethods = [], talentName = '') => {
     metadata: { reason: 'Unsupported or incomplete automatic payout details' },
   };
 };
+
+export const resolveSettlementPayoutMethod = (paymentMethods, talentName, payInCash) =>
+  payInCash
+    ? { type: 'cash', status: 'cash_due', provider: null, destination: null, metadata: null }
+    : resolvePayoutMethod(paymentMethods, talentName);
