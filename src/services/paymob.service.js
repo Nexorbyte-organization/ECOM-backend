@@ -38,6 +38,7 @@ class PaymobConfigurationError extends Error {
   constructor(message) {
     super(message);
     this.statusCode = 503;
+    this.publicMessage = message;
   }
 }
 
@@ -216,7 +217,7 @@ export const buildCardEnrollmentPayload = ({ enrollment, organizer, config, inte
   redirection_url: `${config.frontendUrl}/provider/profile?cardEnrollment=${enrollment.id}`,
 });
 
-const requestJson = async (url, options) => {
+const requestJson = async (url, options, allowNotFound = false) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
@@ -229,6 +230,7 @@ const requestJson = async (url, options) => {
       data = { detail: text };
     }
 
+    if (allowNotFound && response.status === 404) return null;
     if (!response.ok) {
       const detail = safePaymobDetail(data);
       throw new PaymobRequestError(`Paymob rejected checkout (HTTP ${response.status})${detail ? `: ${detail}` : ''}`);
@@ -276,17 +278,37 @@ export const createPaymobIntention = async ({ settlement, event, organizer, line
   return postIntention(buildIntentionPayload({ settlement, event, organizer, lines, config, cardToken }), config);
 };
 
-export const getCardEnrollmentIntegrationId = (config = getPaymobTestConfig()) => {
+export const getCardEnrollmentIntegrationId = () => {
   const configured = process.env.PAYMOB_CARD_INTEGRATION_ID?.trim();
-  const integrationId = Number(configured || config.paymentMethods[0]);
-  if (!Number.isSafeInteger(integrationId) || integrationId <= 0) {
-    throw new PaymobConfigurationError('A numeric Test Card Integration ID is required to add a card');
+  const integrationId = Number(configured);
+  if (!configured || !Number.isSafeInteger(integrationId) || integrationId <= 0) {
+    throw new PaymobConfigurationError('PAYMOB_CARD_INTEGRATION_ID must be a Test Normal 3DS or Auth card integration with card saving enabled');
   }
   return integrationId;
 };
 
+export const inquireCardTokens = async (orderId) => {
+  const apiKey = process.env.PAYMOB_API_KEY?.trim();
+  if (!apiKey) return [];
+  const config = getPaymobTestConfig();
+  const auth = await requestJson(`${config.baseUrl}/api/auth/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  if (!auth.token) throw new PaymobRequestError('Paymob did not return an inquiry auth token');
+  const tokens = await requestJson(`${config.baseUrl}/api/acceptance/order_card_tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auth_token: auth.token, order_id: Number(orderId) }),
+  }, true);
+  if (tokens === null) return [];
+  if (!Array.isArray(tokens)) throw new PaymobRequestError('Paymob returned an invalid card-token inquiry');
+  return tokens;
+};
+
 export const createCardEnrollmentIntention = async ({ enrollment, organizer }) => {
   const config = getPaymobTestConfig();
-  const integrationId = getCardEnrollmentIntegrationId(config);
+  const integrationId = getCardEnrollmentIntegrationId();
   return postIntention(buildCardEnrollmentPayload({ enrollment, organizer, config, integrationId }), config);
 };
