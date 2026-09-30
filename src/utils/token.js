@@ -14,16 +14,18 @@ export class TokenService {
     return jwt.verify(token, secretKey);
   }
 
-  static generateAccessToken(user, sessionHash) {
+  static generateAccessToken(user, sessionHash, actingAsId) {
     return this.generateToken({
-      payload: { id: user.id, email: user.email, role: user.role, purpose: 'access', sessionHash },
+      payload: { id: user.id, email: user.email, role: user.role, purpose: 'access', sessionHash,
+        ...(actingAsId ? { actingAsId } : {}) },
       expiresIn: '15m',
     });
   }
 
-  static generateRefreshToken(user) {
+  static generateRefreshToken(user, actingAsId) {
     return this.generateToken({
-      payload: { id: user.id, purpose: 'refresh', sessionId: randomUUID() },
+      payload: { id: user.id, purpose: 'refresh', sessionId: randomUUID(),
+        ...(actingAsId ? { actingAsId } : {}) },
       expiresIn: '30d',
     });
   }

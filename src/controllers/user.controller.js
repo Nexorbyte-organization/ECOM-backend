@@ -15,44 +15,22 @@ import {
     clearSessionCookies,
     getRefreshToken,
     hashToken,
-    setSessionCookies,
     tokenHashesMatch,
 } from '../utils/session.js';
+import { findAvailableOrganization, issueSession } from '../services/session.service.js';
 
 const SAFE_USER_ATTRS = { exclude: [
     'password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified',
     'refreshTokenHash', 'refreshTokenExpiresAt',
 ] };
 
-const issueSession = async (user, res, previousHash) => {
-    const refreshToken = TokenService.generateRefreshToken(user);
-    const session = {
-        refreshTokenHash: hashToken(refreshToken),
-        refreshTokenExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    };
-    const accessToken = TokenService.generateAccessToken(user, session.refreshTokenHash);
-    if (previousHash) {
-        // Compare-and-swap prevents a stale refresh from replacing a newer login.
-        const [updated] = await User.update(session, {
-            where: {
-                id: user.id,
-                refreshTokenHash: previousHash,
-                refreshTokenExpiresAt: { [Op.gt]: new Date() },
-                isBlocked: false,
-            },
-        });
-        if (!updated) return null;
-    } else {
-        await user.update(session);
-    }
-    setSessionCookies(res, { accessToken, refreshToken });
-    return accessToken;
-};
-
 const withProfileStatus = (user) => {
     const data = typeof user?.toJSON === 'function' ? user.toJSON() : user;
+    const safeData = { ...data };
+    for (const field of ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified',
+        'refreshTokenHash', 'refreshTokenExpiresAt']) delete safeData[field];
     return {
-        ...data,
+        ...safeData,
         profileCompleted: isProfileComplete(user),
         missingProfileFields: getMissingProfileFields(user),
     };
@@ -355,12 +333,19 @@ export class UserController {
             return next(new AppError('Session expired', 401));
         }
 
-        const token = await issueSession(user, res, hashToken(refreshToken));
+        const organization = payload.actingAsId && user.role === 'admin'
+            ? await findAvailableOrganization(payload.actingAsId) : null;
+        const actingAsId = organization?.id;
+        const token = await issueSession(user, res, hashToken(refreshToken), actingAsId);
         if (!token) {
             clearSessionCookies(res);
             return next(new AppError('Session expired', 401));
         }
-        return res.status(200).json({ success: true, token, data: { token, user: withProfileStatus(user) } });
+        const currentUser = organization || user;
+        return res.status(200).json({ success: true, token, data: {
+            token, user: { ...withProfileStatus(currentUser),
+                ...(organization ? { actingAs: { adminId: user.id, organizationId: organization.id, organizationName: organization.fullName } } : {}) },
+        } });
     }
 
     static async logout(req, res) {
@@ -444,7 +429,11 @@ export class UserController {
         return res.status(200).json({
             success: true,
             message: 'Profile fetched successfully',
-            data: withProfileStatus(user),
+            data: { ...withProfileStatus(user),
+                ...(req.adminActor ? { actingAs: {
+                    adminId: req.adminActor.id, organizationId: user.id, organizationName: user.fullName,
+                } } : {}),
+            },
         });
     }
 }

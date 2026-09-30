@@ -3,6 +3,8 @@
 ## Current behavior
 Admin routes require authenticated admin role. Features include platform totals, user/talent/company lists and invitations, blocking, verification/status updates, deletion, and late-excuse reset.
 
+Admins can switch into any active, unblocked organization owner account from the admin user list. The acting session has that owner's full organization permissions, including financial actions, and no admin route access until stopped. The backend records the real admin actor on the request and logs acting mutations; there is no persistent audit table.
+
 Admins list/moderate/delete events and resolve cancel/delete requests. Approval applies the requested action and records resolution as implemented; deletion uses shared relation cleanup. Read controllers before changing transitions. Email verification and talent performance verification differ.
 
 Admin user deletion is a soft delete. Organization deletion uses one transaction for the organization, its staff and their notifications, owned events and event relations, organization notifications, settlements, saved cards, and card enrollments. Any dependent write failure rolls back the whole cascade. Deleted users and organizations are excluded from lists, lookups, and dashboard totals. Accounts retain their identity keys; invitations and signup still reject identities reserved by deleted accounts. The frontend reloads lists after deletion and describes retained data in its confirmation.

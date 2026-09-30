@@ -3,9 +3,10 @@ import { AppError } from '../utils/appError.js';
 import { TokenService } from '../utils/token.js';
 import { getMissingProfileFields } from '../utils/profileCompletion.js';
 import { getAccessToken, tokenHashesMatch } from '../utils/session.js';
+import { findAvailableOrganization } from '../services/session.service.js';
 
 export class AuthMiddleware {
-  static isAuthenticated() {
+  static isAuthenticated({ adminSession = false } = {}) {
     return async (req, res, next) => {
       try {
         const payload = TokenService.verifyPurposeToken({ token: getAccessToken(req), purpose: 'access' });
@@ -39,7 +40,28 @@ export class AuthMiddleware {
           }
         }
 
-        req.authUser = user;
+        if (payload.actingAsId) {
+          if (user.role !== 'admin') return next(new AppError('Invalid acting session', 401));
+          req.adminActor = user;
+          req.actingAsId = payload.actingAsId;
+          if (!adminSession) {
+            const organization = await findAvailableOrganization(payload.actingAsId);
+            if (!organization) return next(new AppError('Organization unavailable. Refresh your session.', 401));
+            req.authUser = organization;
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && typeof res.on === 'function') {
+              res.on('finish', () => {
+                // Keep the real actor visible in server logs without recording request bodies.
+                // eslint-disable-next-line no-console
+                console.info(JSON.stringify({ event: 'admin_organization_action', adminId: user.id,
+                  organizationId: organization.id, method: req.method, path: req.path, status: res.statusCode }));
+              });
+            }
+          } else {
+            req.authUser = user;
+          }
+        } else {
+          req.authUser = user;
+        }
         next();
       } catch (error) {
         return next(new AppError('Authentication Failed', 401));
