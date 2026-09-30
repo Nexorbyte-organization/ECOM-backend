@@ -11,6 +11,7 @@ Express and PostgreSQL API for the OO-Ushers platform. It supports usher and org
 
 ```env
 APP_ENV=dev
+DB_SYNC_ALTER=false
 PORT=4000
 BASE_URL=https://YOUR-PUBLIC-TEST-BACKEND.example.com
 FRONTEND_URL=http://localhost:3001
@@ -54,7 +55,7 @@ The organization settles an event only after it is completed. Every present or l
 
 For card-on-file testing, set `PAYMOB_CARD_INTEGRATION_ID` to a Test Normal 3DS or Auth card integration with card saving enabled. Add Card will fail with a configuration error if this is missing; it no longer falls back to a wallet integration. The organizer must select Save Card in Paymob Checkout. `PAYMOB_API_KEY` enables an order-based card-token inquiry when the callback is missed; the callback remains the primary path. Payouts credentials are issued separately by the Paymob Payouts account manager.
 
-The database startup is backward-compatible with the earlier schema: it adds the new frontend-alignment columns and staff role values when an existing PostgreSQL database is detected. In development, Sequelize also synchronizes model changes.
+Database startup runs the repository migrations and creates missing tables. Sequelize schema alteration is off by default because it may drop existing PostgreSQL constraints. To opt in against a disposable local development database only, set `DB_SYNC_ALTER=true` with `APP_ENV=dev`; it remains disabled when `NODE_ENV=production` or `VERCEL` is set. Apply deliberate migrations for deployed schema changes.
 
 ## Account access rules
 
