@@ -8,10 +8,38 @@ import { HashService } from '../utils/hashAndcompare.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { normalizeRole } from '../utils/normalization.js';
+import { findAvailableOrganization, issueSession } from '../services/session.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
 export class AdminController {
+
+    static async switchToOrganization(req, res, next) {
+        const { id } = req.params;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+            return next(new AppError('Invalid organization id', 400));
+        }
+        const organization = await findAvailableOrganization(id);
+        if (!organization) return next(new AppError('Organization not found or blocked', 404));
+        const token = await issueSession(req.authUser, res, req.authUser.refreshTokenHash, organization.id);
+        if (!token) return next(new AppError('Session expired. Please sign in again.', 401));
+        // eslint-disable-next-line no-console
+        console.info(JSON.stringify({ event: 'admin_organization_switch', adminId: req.authUser.id,
+            organizationId: organization.id }));
+        return res.status(200).json({ success: true, data: {
+            organizationId: organization.id, organizationName: organization.fullName,
+        } });
+    }
+
+    static async stopActingAsOrganization(req, res, next) {
+        const admin = req.authUser;
+        const token = await issueSession(admin, res, admin.refreshTokenHash);
+        if (!token) return next(new AppError('Session expired. Please sign in again.', 401));
+        // eslint-disable-next-line no-console
+        console.info(JSON.stringify({ event: 'admin_organization_stop', adminId: admin.id,
+            organizationId: req.actingAsId || null }));
+        return res.status(200).json({ success: true });
+    }
 
     // US-301: Get all users — with search & role filter + ApiFeature pagination
     static async getAllUsers(req, res, next) {

@@ -10,6 +10,10 @@ export const adminRouter = Router();
 
 const auth = [AuthMiddleware.isAuthenticated(), AuthMiddleware.isAuthorized(['admin'])];
 
+adminRouter.post('/organizations/:id/switch', ...auth, ErrorHandler.asyncHandler(AdminController.switchToOrganization));
+adminRouter.post('/organizations/stop', AuthMiddleware.isAuthenticated({ adminSession: true }),
+  AuthMiddleware.isAuthorized(['admin']), ErrorHandler.asyncHandler(AdminController.stopActingAsOrganization));
+
 // US-300: Dashboard
 adminRouter.get('/dashboard', ...auth, ErrorHandler.asyncHandler(AdminController.getDashboard));
 
