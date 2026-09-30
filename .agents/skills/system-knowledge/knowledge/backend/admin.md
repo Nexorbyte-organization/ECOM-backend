@@ -7,12 +7,15 @@ Admins list/moderate/delete events and resolve cancel/delete requests. Approval 
 
 Admin user deletion is a soft delete. Organization deletion uses one transaction for the organization, its staff and their notifications, owned events and event relations, organization notifications, settlements, saved cards, and card enrollments. Any dependent write failure rolls back the whole cascade. Deleted users and organizations are excluded from lists, lookups, and dashboard totals. Accounts retain their identity keys; invitations and signup still reject identities reserved by deleted accounts. The frontend reloads lists after deletion and describes retained data in its confirmation.
 
+`npm run seed:demo` runs the CLI seeder on Windows and Unix against the database selected by `PG_URI`. It requires `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` (at least 8 characters), and creates or resets that admin account. It does not print the password. Legacy demo cleanup is disabled unless `SEED_DEMO_CLEANUP=true`; that flag removes specified legacy demo records and should only be used on an isolated demo database. The script has no environment allowlist, so operators must verify the target database before running it.
+
 ## Source entry points
 - `src/routers/admin.router.js`
 - `src/controllers/admin.controller.js`
 - `src/services/event.service.js`
 - `db/models/event-action-request.model.js`
 - `src/validators/user.validator.js`
+- `scripts/seed-demo-data.js`
 
 ## Change coupling
 Changes affect frontend admin dashboard/users/events. Permission changes require ROLES.md; lifecycle changes require events.md.
