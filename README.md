@@ -52,7 +52,7 @@ The organization settles an event only after it is completed. Every present or l
 - The collection callback and card-token callback are SHA-512 HMAC verified. Saved card tokens are encrypted with AES-256-GCM using a key derived from the Test Paymob secret already stored in the backend environment; raw card numbers and CVVs never enter this application.
 - Live credentials are rejected. Moving to production requires a deliberate code and configuration change after sandbox acceptance.
 
-For card-on-file testing, ask Paymob to enable a Test Integration ID that enforces card saving. Payouts credentials are issued separately by the Paymob Payouts account manager.
+For card-on-file testing, set `PAYMOB_CARD_INTEGRATION_ID` to a Test Normal 3DS or Auth card integration with card saving enabled. Add Card will fail with a configuration error if this is missing; it no longer falls back to a wallet integration. The organizer must select Save Card in Paymob Checkout. `PAYMOB_API_KEY` enables an order-based card-token inquiry when the callback is missed; the callback remains the primary path. Payouts credentials are issued separately by the Paymob Payouts account manager.
 
 The database startup is backward-compatible with the earlier schema: it adds the new frontend-alignment columns and staff role values when an existing PostgreSQL database is detected. In development, Sequelize also synchronizes model changes.
 

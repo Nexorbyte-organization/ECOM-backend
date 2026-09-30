@@ -6,6 +6,8 @@ import {
   calculateCardTokenHmac,
   calculateTransactionHmac,
   getPaymobTestConfig,
+  getCardEnrollmentIntegrationId,
+  inquireCardTokens,
   verifyCardTokenHmac,
   verifyTransactionHmac,
 } from '../src/services/paymob.service.js';
@@ -168,6 +170,7 @@ test('intention charges digital payouts plus only the platform fee for cash ushe
   assert.match(payload.notification_url, /\/payments\/paymob\/webhook$/);
   assert.equal(payload.card_tokens, undefined);
 
+  process.env.PAYMOB_CARD_INTEGRATION_ID = '123';
   const savedCardPayload = buildIntentionPayload({
     settlement,
     event: { id: 'event-id', title: 'Test Event' },
@@ -177,10 +180,15 @@ test('intention charges digital payouts plus only the platform fee for cash ushe
     cardToken: 'saved-card-token',
   });
   assert.deepEqual(savedCardPayload.card_tokens, ['saved-card-token']);
+  assert.deepEqual(savedCardPayload.payment_methods, [123]);
 });
 
 test('card setup uses its own Paymob order and returns to the organizer profile', () => {
   setTestEnvironment();
+  delete process.env.PAYMOB_CARD_INTEGRATION_ID;
+  assert.throws(() => getCardEnrollmentIntegrationId(), /PAYMOB_CARD_INTEGRATION_ID/);
+  process.env.PAYMOB_CARD_INTEGRATION_ID = '789';
+  assert.equal(getCardEnrollmentIntegrationId(), 789);
   const payload = buildCardEnrollmentPayload({
     enrollment: { id: 'enrollment-id' },
     organizer: { fullName: 'OO Events', email: 'owner@example.com', mobileNumber: '+201001234567' },
@@ -191,6 +199,28 @@ test('card setup uses its own Paymob order and returns to the organizer profile'
   assert.equal(payload.amount, payload.items[0].amount);
   assert.equal(payload.extras.card_enrollment_id, 'enrollment-id');
   assert.match(payload.redirection_url, /\/provider\/profile\?cardEnrollment=enrollment-id$/);
+});
+
+test('card-token inquiry recovers a saved token by its Paymob order', async () => {
+  setTestEnvironment();
+  process.env.PAYMOB_API_KEY = 'test-api-key';
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    if (url.endsWith('/api/auth/tokens')) return new Response(JSON.stringify({ token: 'auth-token' }), { status: 200 });
+    return new Response(JSON.stringify([{ type: 'TOKEN', obj: { id: 42, order_id: '123', token: 'saved-token' } }]), { status: 200 });
+  };
+  try {
+    const tokens = await inquireCardTokens('123');
+    assert.equal(tokens[0].obj.token, 'saved-token');
+    assert.equal(requests[0].body.api_key, 'test-api-key');
+    assert.equal(requests[1].body.order_id, 123);
+    assert.equal(requests[1].body.auth_token, 'auth-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete process.env.PAYMOB_API_KEY;
+  }
 });
 
 test('payout payloads keep Paymob fees on the platform side', () => {
