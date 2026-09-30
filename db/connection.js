@@ -2,6 +2,7 @@ import { Sequelize } from 'sequelize';
 import pg from 'pg'; // Explicit import so Vercel's bundler includes it
 import dotenv from 'dotenv';
 import path from 'path';
+import { shouldAlterSchema } from './sync-policy.js';
 
 dotenv.config({ path: path.resolve('./.env') });
 void pg;
@@ -26,9 +27,7 @@ export const connectDB = async () => {
         await sequelize.authenticate();
         const { migrateExistingSchema } = await import('./migrate.js');
         await migrateExistingSchema();
-        await sequelize.sync({
-            alter: process.env.APP_ENV === 'dev', // auto-alter schema in dev; disable in prod
-        });
+        await sequelize.sync({ alter: shouldAlterSchema() });
         // eslint-disable-next-line no-console
         console.log('\x1b[32m✔ PostgreSQL connected & synced successfully\x1b[0m');
     } catch (error) {

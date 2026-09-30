@@ -7,7 +7,7 @@ Aliases /usher and /talent share a router; /organizer and /provider share a rout
 
 Core configuration requires PG_URI and JWT_SECRET_KEY (at least 32 characters). Production validates base/frontend URL, email, and Cloudinary presence. Describe configuration names without values. Payments validate configuration separately.
 
-Startup connects/migrates DB; do not run it as a documentation-only check. npm test and npm run lint verify relevant code changes. Contract changes may require npm run generate:openapi and generated-doc review.
+Startup connects/migrates DB and creates missing tables. Sequelize schema alteration is disabled by default to avoid dropping existing constraints. A developer can opt in only for a local development database with `DB_SYNC_ALTER=true` and `APP_ENV=dev`; `NODE_ENV=production` or `VERCEL` prevents it. Deployed schema changes need deliberate migrations. Do not run startup as a documentation-only check. npm test and npm run lint verify relevant code changes. Contract changes may require npm run generate:openapi and generated-doc review.
 
 All Sequelize models inherit `paranoid: true` from `db/connection.js`. `deletedAt` is a nullable timestamp: `NULL` means active; destroy operations set it and retain the row. Normal model reads, primary-key lookups, lists, updates, and counts exclude deleted records. The startup migration adds the column to every registered existing table; new tables receive it through sync. No public include-deleted, restore, or hard-delete API is exposed. Existing user identity uniqueness remains global, including archived rows. JSON array edits and image replacement remain updates to their parent record.
 
