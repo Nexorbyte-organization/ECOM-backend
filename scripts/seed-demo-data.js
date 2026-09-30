@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 import dotenv from 'dotenv';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { Op } from 'sequelize';
 import { sequelize } from '../db/connection.js';
 import {
@@ -21,8 +22,8 @@ import { language, roles, status } from '../src/utils/constant/enums.js';
 
 dotenv.config({ path: path.resolve('./.env') });
 
-const ADMIN_EMAIL = 'admin@example.com';
-const ADMIN_PASSWORD = 'Test@1234!!';
+const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL?.trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD;
 
 const adminData = {
   fullName: 'OO Admin',
@@ -136,12 +137,21 @@ const removeLegacyDemoData = async (transaction) => {
 };
 
 export const seedDemoData = async ({ closeConnection = false } = {}) => {
+  if (!ADMIN_EMAIL || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL)) {
+    throw new Error('SEED_ADMIN_EMAIL must be a valid email address');
+  }
+  if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
+    throw new Error('SEED_ADMIN_PASSWORD must be at least 8 characters');
+  }
+
   await sequelize.authenticate();
   await sequelize.sync();
 
   const transaction = await sequelize.transaction();
   try {
-    const removed = await removeLegacyDemoData(transaction);
+    const removed = process.env.SEED_DEMO_CLEANUP === 'true'
+      ? await removeLegacyDemoData(transaction)
+      : { usersRemoved: 0, eventsRemoved: 0 };
     const password = HashService.hashPassword({ password: ADMIN_PASSWORD });
     const [admin] = await User.findOrCreate({
       where: { email: ADMIN_EMAIL },
@@ -163,7 +173,6 @@ export const seedDemoData = async ({ closeConnection = false } = {}) => {
     await transaction.commit();
     return {
       users: [{ email: admin.email, role: admin.role, name: admin.fullName }],
-      password: ADMIN_PASSWORD,
       removed,
     };
   } catch (error) {
@@ -174,11 +183,10 @@ export const seedDemoData = async ({ closeConnection = false } = {}) => {
   }
 };
 
-const isCliRun = process.argv[1] && import.meta.url === new URL(process.argv[1], 'file:').href;
+const isCliRun = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 
 if (isCliRun) seedDemoData({ closeConnection: true }).then((result) => {
   console.log('Admin account seeded successfully.');
-  console.log(`Admin password: ${result.password}`);
   console.log(`Removed ${result.removed.usersRemoved} legacy demo users and ${result.removed.eventsRemoved} demo events.`);
   console.table(result.users);
 }).catch((error) => {

@@ -9,6 +9,8 @@ Refresh rotates both tokens using an atomic comparison against the presented ref
 
 Access extraction prefers Authorization (Bearer or raw), then legacy token header, then the cookie. Browser clients use cookies; this is not bearer-only authentication.
 
+An admin can enter an organization owner workspace through POST /admin/organizations/:id/switch. Both access and refresh tokens keep the admin as the session owner and carry the selected organization id. Authentication checks the admin session and the active, unblocked organizer on each request, then gives organization routes the organizer as `req.authUser` and the original admin as `req.adminActor`. Admin routes are unavailable in that mode. POST /admin/organizations/stop restores the admin workspace, including when the organization has become unavailable. Both transitions rotate the admin session and invalidate earlier access and refresh tokens. Refresh preserves the acting context while the organization remains available, or restores the admin context when it does not. No organization credentials or separate organization session are created. Mutation logs include admin id, organization id, method, path, and response status without request bodies.
+
 Forgot-password → OTP validation (three failed attempts) → purpose-bound reset token → reset-password. Auth endpoints are rate limited.
 
 Soft-deleted users are excluded from normal account lookups, so login, refresh, verification, password recovery, and authenticated requests cannot use them. Organization cascades also delete staff accounts. Existing requests that passed authentication before deletion may still finish. Signup duplicate checks include archived records because email, username, and mobile uniqueness remain global.
@@ -18,6 +20,7 @@ Soft-deleted users are excluded from normal account lookups, so login, refresh, 
 - `src/controllers/user.controller.js`
 - `src/utils/token.js`
 - `src/utils/session.js`
+- `src/services/session.service.js`
 - `src/middlewares/authentication.js`
 - `src/initapp.js`
 - `db/models/user.model.js`
