@@ -13,7 +13,7 @@ test('demo seed CLI executes on this platform and reports database failures', ()
       PG_URI: 'postgres://seed_test:seed_test@127.0.0.1:1/seed_test',
       PG_SSL: 'false',
       SEED_ADMIN_EMAIL: 'seed-test@example.com',
-      SEED_ADMIN_PASSWORD: 'unique-test-password-123',
+      SEED_ADMIN_PASSWORD: 'uniquePass1',
       SEED_DEMO_CLEANUP: 'false',
     },
     encoding: 'utf8',

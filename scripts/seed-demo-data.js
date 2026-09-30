@@ -140,8 +140,8 @@ export const seedDemoData = async ({ closeConnection = false } = {}) => {
   if (!ADMIN_EMAIL || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ADMIN_EMAIL)) {
     throw new Error('SEED_ADMIN_EMAIL must be a valid email address');
   }
-  if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 12) {
-    throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters');
+  if (!ADMIN_PASSWORD || ADMIN_PASSWORD.length < 8) {
+    throw new Error('SEED_ADMIN_PASSWORD must be at least 8 characters');
   }
 
   await sequelize.authenticate();

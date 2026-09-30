@@ -67,7 +67,7 @@ Database startup runs the repository migrations and creates missing tables. Sequ
 - Organizer staff can use their company workspace, but cannot bypass an incomplete or blocked owner account.
 - Public signup only permits usher/talent and organizer/provider accounts. Staff and admin roles must be invited.
 
-To seed an admin, set `SEED_ADMIN_EMAIL` and a unique `SEED_ADMIN_PASSWORD` of at least 12 characters, verify that `PG_URI` points to the intended database, then run `npm run seed:demo` from the repository root. The command creates or resets that admin account and reports success or failure; it does not print the password. It leaves legacy demo records alone unless `SEED_DEMO_CLEANUP=true` is explicitly set. Do not enable cleanup on a database containing real data.
+To seed an admin, set `SEED_ADMIN_EMAIL` and a unique `SEED_ADMIN_PASSWORD` of at least 8 characters, verify that `PG_URI` points to the intended database, then run `npm run seed:demo` from the repository root. The command creates or resets that admin account and reports success or failure; it does not print the password. It leaves legacy demo records alone unless `SEED_DEMO_CLEANUP=true` is explicitly set. Do not enable cleanup on a database containing real data.
 - Event, company, profile, and portfolio images are validated in memory and uploaded to Cloudinary rather than embedded in JSON payloads.
 - Referral URLs contain signed, expiring invite tokens; public previews expose only the event and referrer fields needed by registration.
 
