@@ -16,6 +16,7 @@ import {
   createCardEnrollmentIntention,
   getCardEnrollmentIntegrationId,
   getPaymobTestConfig,
+  inquireCardTokens,
   verifyCardTokenHmac,
   verifyTransactionHmac,
 } from '../services/paymob.service.js';
@@ -155,6 +156,40 @@ const serializeSettlement = async (settlement) => {
     payoutSandboxConfigured: isPayoutSandboxConfigured(),
     lines: lines.map((line) => publicLine(line, talentsById.get(line.talentId))),
   };
+};
+
+const saveOrganizerCardToken = async (obj, organizerId) => {
+  const organizer = await User.findByPk(organizerId);
+  if (!organizer) return false;
+  const existingCard = await OrganizerCard.findOne({ where: { paymobCardTokenId: String(obj.id) }, paranoid: false });
+  if (existingCard && existingCard.organizerId !== organizerId) {
+    throw new AppError('Card token is already assigned to another organization', 409);
+  }
+  if (existingCard?.deletedAt) return false;
+  if (!obj?.id || !obj?.token || !obj?.masked_pan) {
+    throw new AppError('Incomplete Paymob card token', 400);
+  }
+  if (obj.next_payment_intention && !String(obj.next_payment_intention).startsWith('pi_test_')) {
+    throw new AppError('Live Paymob card tokens are disabled', 409);
+  }
+  const values = {
+    ...encryptCardToken(obj.token),
+    maskedPan: obj.masked_pan,
+    cardSubtype: obj.card_subtype,
+    cardholderName: obj.cardholder_name || null,
+    expiryMonth: obj.expiry_month || null,
+    expiryYear: obj.expiry_year || null,
+    isDefault: true,
+    isActive: true,
+    isLive: false,
+  };
+  await OrganizerCard.update({ isDefault: false }, { where: { organizerId, isLive: false } });
+  const [card, created] = await OrganizerCard.findOrCreate({
+    where: { paymobCardTokenId: String(obj.id) },
+    defaults: { organizerId, ...values },
+  });
+  if (!created) await card.update(values);
+  return true;
 };
 
 const updateAggregatePayoutStatus = async (settlement) => {
@@ -505,6 +540,7 @@ export class PaymentController {
 
   static async startCardEnrollment(req, res, next) {
     assertCardTokenEncryptionConfigured();
+    getCardEnrollmentIntegrationId();
     const organizerId = getOrganizerId(req.authUser);
     const organizer = await User.findByPk(organizerId);
     const enrollment = await OrganizerCardEnrollment.create({ organizerId });
@@ -528,6 +564,20 @@ export class PaymentController {
       where: { id: req.params.enrollmentId, organizerId: getOrganizerId(req.authUser) },
     });
     if (!enrollment) return next(new AppError('Card setup not found', 404));
+    if (enrollment.status === 'pending' && enrollment.paymobOrderId) {
+      let tokens = [];
+      try {
+        tokens = await inquireCardTokens(enrollment.paymobOrderId);
+      } catch {
+        // A temporary inquiry failure must not replace the callback-driven enrollment state.
+      }
+      for (const entry of tokens) {
+        if (entry?.type !== 'TOKEN' || String(entry.obj?.order_id) !== enrollment.paymobOrderId) continue;
+        if (!await saveOrganizerCardToken(entry.obj, enrollment.organizerId)) continue;
+        await enrollment.update({ status: 'completed' });
+        break;
+      }
+    }
     if (enrollment.status === 'pending' && enrollment.expiresAt && enrollment.expiresAt < new Date()) {
       await enrollment.update({ status: 'failed' });
     }
@@ -656,50 +706,9 @@ export class PaymentController {
         where: { paymobOrderId: String(obj.order_id) }, paranoid: false,
       });
       if (!settlement && !enrollment) return next(new AppError('No test checkout matches this card token', 404));
-      const organizerId = settlement?.organizerId || enrollment.organizerId;
-      const organizer = await User.findByPk(organizerId);
-      if (!organizer || settlement?.deletedAt || enrollment?.deletedAt) {
+      if (settlement?.deletedAt || enrollment?.deletedAt
+        || !await saveOrganizerCardToken(obj, settlement?.organizerId || enrollment.organizerId)) {
         return res.status(200).json({ success: true, received: true, ignored: true });
-      }
-      const existingCard = await OrganizerCard.findOne({ where: { paymobCardTokenId: String(obj.id) }, paranoid: false });
-      if (existingCard && existingCard.organizerId !== organizerId) {
-        return next(new AppError('Card token is already assigned to another organization', 409));
-      }
-      if (existingCard?.deletedAt) {
-        return res.status(200).json({ success: true, received: true, ignored: true });
-      }
-      const encrypted = encryptCardToken(obj.token);
-      await OrganizerCard.update(
-        { isDefault: false },
-        { where: { organizerId, isLive: false } },
-      );
-      const [card, created] = await OrganizerCard.findOrCreate({
-        where: { paymobCardTokenId: String(obj.id) },
-        defaults: {
-          organizerId,
-          ...encrypted,
-          maskedPan: obj.masked_pan,
-          cardSubtype: obj.card_subtype,
-          cardholderName: obj.cardholder_name || null,
-          expiryMonth: obj.expiry_month || null,
-          expiryYear: obj.expiry_year || null,
-          isDefault: true,
-          isActive: true,
-          isLive: false,
-        },
-      });
-      if (!created) {
-        await card.update({
-          ...encrypted,
-          maskedPan: obj.masked_pan,
-          cardSubtype: obj.card_subtype,
-          cardholderName: obj.cardholder_name || null,
-          expiryMonth: obj.expiry_month || null,
-          expiryYear: obj.expiry_year || null,
-          isDefault: true,
-          isActive: true,
-          isLive: false,
-        });
       }
       if (enrollment) await enrollment.update({ status: 'completed' });
       return res.status(200).json({ success: true, received: true });
