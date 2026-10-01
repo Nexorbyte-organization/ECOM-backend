@@ -7,7 +7,7 @@ Owner generates one QR while open. Persisted creation timestamp/event ID form an
 
 Present/late records contribute to a good-event streak; five good events reset late excuses and streak. Absence resets streak. Event-specific reviews reject duplicate reviewer/person/event entries and refresh rating aggregates. The review comment is optional; an empty comment is stored as null. GET /organizer/events/:id/reviews lets the frontend show who has already been rated.
 
-Absent and unmarked ushers are left out of payments. Once an usher's payment has started (a settlement line whose collection is not failed), the organization can no longer mark them absent.
+Absent and unmarked ushers are left out of payments. Once an usher's payment has started (a settlement line whose collection is not failed), the organization can no longer mark them absent. Attendance records `checkInMethod` (qr/manual/admin); a QR scan creates or upgrades the record to qr, and the organization cannot mark a QR-verified present/late usher absent. On a prefunded event, releasing payments requires every hired usher to be marked; absent marks then hold that usher's pay for a dispute window, and changing such an usher to present/late afterwards pays them from the hold. Other attendance changes for unmarked ushers after release are rejected.
 
 Performance verification requires at least 10 present/late attendance records on accepted applications and rating at least 4. completedEventsCount is attendance-derived, not solely the event's completed status. Reliability is present/late percentage among attendance on accepted applications, defaulting to 100 with no records.
 

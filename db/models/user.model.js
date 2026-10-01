@@ -218,6 +218,11 @@ export const User = sequelize.define(
       allowNull: true,
       references: { model: 'users', key: 'id' },
     },
+    // Admin decision that replaces the automatic organization payment tier; null means automatic.
+    paymentTierOverride: {
+      type: DataTypes.ENUM('standard', 'trusted'),
+      allowNull: true,
+    },
   },
   {
     timestamps: true,

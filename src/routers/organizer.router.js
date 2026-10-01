@@ -9,6 +9,7 @@ import { ValidationMiddleware } from '../middlewares/validation.js';
 import { EventValidator, ApplicationValidator, AttendanceValidator, ReviewValidator, StaffValidator, SupervisorValidator } from '../validators/event.validator.js';
 import { OrganizerProfileValidator } from '../validators/user.validator.js';
 import { PaymentController } from '../controllers/payment.controller.js';
+import { FundingController } from '../controllers/funding.controller.js';
 
 export const organizerRouter = Router();
 
@@ -90,7 +91,7 @@ organizerRouter.post('/direct-book', ...workspaceAuth, completeProfile, Validati
 
 organizerRouter.post('/events/:id/whatsapp-group', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.createWhatsAppGroup));
 
-// Test-mode Paymob settlement: one collection for all eligible ushers after an event.
+// Test-mode Paymob settlement for pay-after events: one collection for all eligible ushers after an event.
 organizerRouter.get('/events/:id/settlement-preview', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.previewEventSettlement));
 organizerRouter.get('/events/:id/settlement', ...workspaceAuth, ErrorHandler.asyncHandler(PaymentController.getEventSettlement));
 organizerRouter.post('/events/:id/settlement', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.createEventSettlement));
@@ -98,6 +99,14 @@ organizerRouter.get('/events/:id/individual-settlements', ...workspaceAuth, Erro
 organizerRouter.post('/events/:id/ushers/:talentId/settlement', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.createIndividualSettlement));
 organizerRouter.patch('/settlements/:settlementId/lines/:lineId/cash-paid', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.markCashPaid));
 organizerRouter.post('/settlements/:settlementId/lines/:lineId/retry-payout', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.retryIndividualPayout));
+// Advance funding: the organization funds the hired team, and payments are released after the event.
+organizerRouter.get('/events/:id/funding', ...workspaceAuth, ErrorHandler.asyncHandler(FundingController.getEventFunding));
+organizerRouter.post('/events/:id/funding', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.startEventFunding));
+organizerRouter.patch('/events/:id/funding-mode', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.setFundingMode));
+organizerRouter.post('/events/:id/release-payments', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.releaseEventFunds));
+organizerRouter.get('/credit', ...ownerAuth, ErrorHandler.asyncHandler(FundingController.getCredit));
+organizerRouter.post('/credit/withdrawals', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.requestWithdrawal));
+organizerRouter.delete('/credit/withdrawals/:withdrawalId', ...ownerAuth, ErrorHandler.asyncHandler(FundingController.cancelWithdrawal));
 organizerRouter.get('/payment-cards', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.listOrganizerCards));
 organizerRouter.post('/payment-cards/enrollments', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.startCardEnrollment));
 organizerRouter.get('/payment-cards/enrollments/:enrollmentId', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.getCardEnrollment));

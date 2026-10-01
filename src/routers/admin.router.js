@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
 import { AdminController } from '../controllers/admin.controller.js';
+import { FundingController } from '../controllers/funding.controller.js';
 import { ValidationMiddleware } from '../middlewares/validation.js';
 import { EventActionRequestValidator, EventValidator } from '../validators/event.validator.js';
 import { AdminUserValidator } from '../validators/user.validator.js';
@@ -57,5 +58,17 @@ adminRouter.delete('/events/:id', ...auth, ErrorHandler.asyncHandler(AdminContro
 
 adminRouter.get('/event-action-requests', ...auth, ErrorHandler.asyncHandler(AdminController.getEventActionRequests));
 adminRouter.patch('/event-action-requests/:id', ...auth, ValidationMiddleware.isValid(EventActionRequestValidator.resolve), ErrorHandler.asyncHandler(AdminController.resolveEventActionRequest));
+
+// Advance funding, credit, and attendance disputes.
+adminRouter.get('/payments/overview', ...auth, ErrorHandler.asyncHandler(FundingController.adminOverview));
+adminRouter.get('/payments/holds', ...auth, ErrorHandler.asyncHandler(FundingController.listHolds));
+adminRouter.patch('/payments/holds/:holdId/resolve', ...auth, ErrorHandler.asyncHandler(FundingController.resolveHold));
+adminRouter.patch('/payments/withdrawals/:withdrawalId', ...auth, ErrorHandler.asyncHandler(FundingController.resolveWithdrawal));
+adminRouter.post('/payments/settlements/:settlementId/process-payouts', ...auth, ErrorHandler.asyncHandler(FundingController.processQueuedPayouts));
+adminRouter.get('/organizers/:id/payments', ...auth, ErrorHandler.asyncHandler(FundingController.getOrganizerPaymentProfile));
+adminRouter.patch('/organizers/:id/payment-tier', ...auth, ErrorHandler.asyncHandler(FundingController.setOrganizerTier));
+adminRouter.post('/organizers/:id/credit-adjustments', ...auth, ErrorHandler.asyncHandler(FundingController.adjustCredit));
+adminRouter.get('/events/:id/funding', ...auth, ErrorHandler.asyncHandler(FundingController.getEventFundingForAdmin));
+adminRouter.post('/events/:id/release-payments', ...auth, ErrorHandler.asyncHandler(FundingController.adminReleaseEvent));
 
 export default adminRouter;
