@@ -6,8 +6,9 @@ import { messages } from '../utils/constant/messages.js';
 import { HashService } from '../utils/hashAndcompare.js';
 import { normalizeRole } from '../utils/normalization.js';
 import { NotificationService } from '../services/notification.service.js';
+import { SECRET_USER_FIELDS } from '../utils/publicTalent.js';
 
-const SAFE_STAFF_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified'] };
+const SAFE_STAFF_ATTRS = { exclude: SECRET_USER_FIELDS };
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
 
 const removeSupervisorAssignments = async (organizerId, supervisorId, options = {}) => {

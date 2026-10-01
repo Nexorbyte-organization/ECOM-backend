@@ -8,7 +8,7 @@ import { UploadFolders } from '../utils/uploadFolders.js';
 import { ApiFeature } from '../utils/apiFeature.js';
 import { checkAndAutoVerify } from './usher.controller.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
-import { publicTalent } from '../utils/publicTalent.js';
+import { publicTalent, SECRET_USER_FIELDS, talentForOrganization } from '../utils/publicTalent.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { updateApplicationDecision } from '../services/application-decision.service.js';
@@ -24,7 +24,7 @@ export class OrganizerController {
     static async getMyProfile(req, res, next) {
         const userId = getOrganizerId(req.authUser);
         const user = await User.findByPk(userId, {
-            attributes: { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified'] },
+            attributes: { exclude: SECRET_USER_FIELDS },
         });
         if (!user) return next(new AppError(messages.user.notfound, 404));
 
@@ -382,7 +382,7 @@ export class OrganizerController {
         });
 
         const enriched = await Promise.all(applications.map(async (app) => {
-            const talent = await User.findByPk(app.talentId, { attributes: { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified'] } });
+            const talent = talentForOrganization(await User.findByPk(app.talentId));
             let referredByName = null;
             if (app.referredBy) {
                 const referrer = await User.findByPk(app.referredBy, { attributes: ['fullName'] });
@@ -421,6 +421,9 @@ export class OrganizerController {
                 lock: transaction.LOCK.UPDATE,
             });
             if (!lockedEvent) throw new AppError('Not authorized', 403);
+            if (lockedApplication.isDirect && lockedApplication.status === 'pending' && status === 'accepted') {
+                throw new AppError('This booking invitation is waiting for the usher to accept it', 409);
+            }
 
             await updateApplicationDecision({
                 application: lockedApplication,

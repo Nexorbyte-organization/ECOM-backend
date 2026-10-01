@@ -18,6 +18,7 @@ import {
     tokenHashesMatch,
 } from '../utils/session.js';
 import { findAvailableOrganization, issueSession } from '../services/session.service.js';
+import { publicTalent } from '../utils/publicTalent.js';
 
 const SAFE_USER_ATTRS = { exclude: [
     'password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified',
@@ -39,8 +40,9 @@ const withProfileStatus = (user) => {
 export class UserController {
     // signup
     static async signup(req, res, next) {
-        const { password, rate, languages, eventCategories, portfolio } = req.body;
-        let { fullName, userName, email, mobileNumber, city, experience, portfolioPicture, role } = req.body;
+        // Ratings, verification, and images are earned or uploaded later; signup never accepts them.
+        const { password, languages, eventCategories } = req.body;
+        let { fullName, userName, email, mobileNumber, city, experience, role } = req.body;
 
         email = email.toLowerCase();
 
@@ -62,12 +64,10 @@ export class UserController {
             return next(new AppError('One or more event categories are not supported', 400));
         }
 
-        if (!portfolioPicture) {
-            portfolioPicture = {
-                secure_url: "https://res.cloudinary.com/dvz0zvpof/image/upload/v1727788484/Default_pfp.svg_v7dmtb.png",
-                public_id: "default_avatar"
-            };
-        }
+        const portfolioPicture = {
+            secure_url: "https://res.cloudinary.com/dvz0zvpof/image/upload/v1727788484/Default_pfp.svg_v7dmtb.png",
+            public_id: "default_avatar"
+        };
 
         const transaction = await sequelize.transaction();
 
@@ -100,10 +100,10 @@ export class UserController {
             experience,
             portfolioPicture,
             role,
-            rate: rate || 0,
+            rate: 0,
             languages: normalizedLanguages,
             eventCategories: normalizedCategories,
-            portfolio: portfolio || []
+            portfolio: []
         }, { transaction });
 
         // Create token and send verification email — rollback if email fails
@@ -398,18 +398,19 @@ export class UserController {
         });
     }
 
-    // getAllUsers — with pagination via ApiFeature
+    // getAllUsers — public usher profiles only; contact details and payout accounts stay private
     static async getAllUsers(req, res, next) {
         const feature = new ApiFeature(req.query).pagination().sort().build();
         const page = parseInt(req.query.page) || 1;
 
-        const { count, rows: users } = await User.findAndCountAll({
-            attributes: SAFE_USER_ATTRS,
+        const { count, rows } = await User.findAndCountAll({
+            where: { role: 'usher', isBlocked: false },
             order: feature.order.length ? feature.order : [['createdAt', 'DESC']],
             limit: feature.limit,
             offset: feature.offset,
         });
 
+        const users = rows.map(publicTalent);
         return res.status(200).json({
             success: true,
             message: 'Users fetched successfully',

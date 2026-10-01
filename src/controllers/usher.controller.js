@@ -9,10 +9,10 @@ import { ApiFeature } from '../utils/apiFeature.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
 import { normalizeEventCategories, normalizeEventCategory, normalizeLanguages } from '../utils/normalization.js';
 import { NotificationService } from '../services/notification.service.js';
-import { tryAutoAcceptApplication } from '../services/application-decision.service.js';
+import { tryAutoAcceptApplication, updateApplicationDecision } from '../services/application-decision.service.js';
 import { TokenService } from '../utils/token.js';
 import { eventForTalent } from '../utils/eventVisibility.js';
-import { publicTalent } from '../utils/publicTalent.js';
+import { maskPaymentMethods, publicTalent, withoutSecrets } from '../utils/publicTalent.js';
 import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrMatchesEvent, parseAttendanceQrToken } from '../utils/attendanceQr.js';
@@ -110,16 +110,17 @@ export class UsherController {
     // US-210: Get usher profile by id (for organizers/admins to view — read-only)
     static async getUsherProfileById(req, res, next) {
         const { id } = req.params;
-        const excludedAttributes = [
-            'mobileNumber', 'whatsappNumber', 'email', 'password', 'role',
-            'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'providerOwnerId',
-        ];
-        if (!canViewTalentPaymentMethods(req.authUser.role)) excludedAttributes.push('paymentMethods');
+        const talent = await User.findOne({ where: { id, role: 'usher' } });
+        if (!talent) return next(new AppError(messages.user.notfound, 404));
 
-        const user = await User.findByPk(id, {
-            attributes: { exclude: excludedAttributes },
-        });
-        if (!user) return next(new AppError(messages.user.notfound, 404));
+        // Admins see the full record; organizations see masked payout accounts; ushers see the public profile.
+        let user = publicTalent(talent);
+        if (req.authUser.role === 'admin') {
+            user = withoutSecrets(talent);
+        } else if (canViewTalentPaymentMethods(req.authUser.role)) {
+            user.paymentMethods = maskPaymentMethods(talent.paymentMethods);
+        }
+        delete user.role;
 
         const applications = await Application.findAll({
             where: { talentId: id, status: { [Op.in]: ['accepted', 'excused'] } },
@@ -437,8 +438,8 @@ export class UsherController {
     static async getMyApplications(req, res, next) {
         const talentId = req.authUser.id;
         const { filter } = req.query;
-        const page = parseInt(req.query.page) || 1;
-        const size = parseInt(req.query.size) || 10;
+        const { offset, limit: size } = new ApiFeature(req.query).pagination().build();
+        const page = offset / size + 1;
 
         // Fetch all for in-memory enrichment and date-based filtering
         const applications = await Application.findAll({
@@ -464,7 +465,7 @@ export class UsherController {
         }
 
         const total = enriched.length;
-        const paginated = enriched.slice((page - 1) * size, page * size);
+        const paginated = enriched.slice(offset, offset + size);
 
         return res.status(200).json({
             success: true,
@@ -504,6 +505,61 @@ export class UsherController {
             message: messages.event.getsuccessfully,
             data: history,
             count: history.length,
+        });
+    }
+
+    // US-211: The usher accepts or declines an organization's direct booking invitation.
+    static async respondToBookingInvitation(req, res, next) {
+        const { applicationId } = req.params;
+        const { decision } = req.body;
+        const talentId = req.authUser.id;
+
+        const { application, event } = await sequelize.transaction(async (transaction) => {
+            const lockedApplication = await Application.findOne({
+                where: { id: applicationId, talentId },
+                transaction,
+                lock: transaction.LOCK.UPDATE,
+            });
+            if (!lockedApplication) throw new AppError('Application not found', 404);
+            if (!lockedApplication.isDirect) {
+                throw new AppError('Only booking invitations can be accepted or declined by the usher', 400);
+            }
+            if (lockedApplication.status !== 'pending') {
+                throw new AppError('This booking invitation has already been answered', 409);
+            }
+
+            await User.findByPk(talentId, { transaction, lock: transaction.LOCK.UPDATE });
+            const lockedEvent = await Event.findByPk(lockedApplication.eventId, {
+                transaction,
+                lock: transaction.LOCK.UPDATE,
+            });
+            if (!lockedEvent) throw new AppError(messages.event.notfound, 404);
+            if (!['open', 'confirmed'].includes(lockedEvent.status) || new Date(lockedEvent.eventDate) < new Date()) {
+                throw new AppError('This booking invitation is no longer available', 409);
+            }
+
+            await updateApplicationDecision({
+                application: lockedApplication,
+                event: lockedEvent,
+                status: decision === 'accept' ? 'accepted' : 'rejected',
+                transaction,
+            });
+            return { application: lockedApplication, event: lockedEvent };
+        });
+
+        const accepted = decision === 'accept';
+        await NotificationService.create({
+            userId: event.organizerId,
+            title: accepted ? 'Booking invitation accepted' : 'Booking invitation declined',
+            message: `${req.authUser.fullName} ${accepted ? 'accepted' : 'declined'} your invitation to “${event.title}”.`,
+            type: accepted ? 'success' : 'warning',
+            link: `/provider/events/${event.id}`,
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: accepted ? 'Booking accepted' : 'Booking declined',
+            data: application,
         });
     }
 

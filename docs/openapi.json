@@ -908,6 +908,15 @@
           },
           {
             "$ref": "#/components/parameters/SizeParam"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "maximum": 100
+            },
+            "description": "Alias for `size`."
           }
         ],
         "responses": {
@@ -967,6 +976,85 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/usher/applications/{applicationId}/respond": {
+      "patch": {
+        "tags": [
+          "Ushers"
+        ],
+        "summary": "Accept or decline a direct booking invitation",
+        "description": "Answers a pending direct booking (`isDirect: true`). Accepting checks capacity and\nsame-date bookings like any other acceptance; declining marks the application `rejected`.\nThe organization cannot accept a pending invitation on the usher's behalf.\nRequires a complete profile.\n",
+        "operationId": "respondToBookingInvitation",
+        "parameters": [
+          {
+            "name": "applicationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "accept",
+                      "decline"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Invitation answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Application"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Already answered, no longer available, fully staffed, or booked elsewhere that day"
           }
         }
       }
@@ -5052,11 +5140,6 @@
               "admin"
             ],
             "example": "usher"
-          },
-          "rate": {
-            "type": "number",
-            "minimum": 0,
-            "default": 0
           },
           "languages": {
             "type": "array",

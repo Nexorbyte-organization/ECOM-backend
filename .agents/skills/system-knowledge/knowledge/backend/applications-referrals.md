@@ -1,9 +1,11 @@
 # Applications, booking, excuses, and referrals
 
 ## Current behavior
+`GET /talent/applications/my` pages with `size` or its alias `limit` (default 10, maximum 100).
+
 Application joins event/talent with pending/accepted/rejected/excused status, direct-book flag, and referral origin. Unique event/talent constraint prevents duplicates. Applying requires a complete profile and an open event before its deadline.
 
-Decision service synchronizes application status and event.hiredTalents. Acceptance checks capacity and other non-cancelled hired bookings on the same date. Callers use transactions/row locks. Organizer auto-accept preference applies to rating strictly above 4.5; capacity/date conflicts leave the application pending. Direct booking creates a pending direct application before acceptance.
+Decision service synchronizes application status and event.hiredTalents. Acceptance checks capacity and other non-cancelled hired bookings on the same date. Callers use transactions/row locks. Organizer auto-accept preference applies to rating strictly above 4.5; capacity/date conflicts leave the application pending. Direct booking creates a pending direct application (an invitation). Only the usher can accept it, through PATCH /talent/applications/:applicationId/respond with `accept` or `decline`; acceptance runs the same capacity and same-date checks under row locks, and declining marks the application rejected. The organization may still reject (withdraw) a pending invitation but cannot accept it. Answers require a complete profile and an open or confirmed event that has not started.
 
 Excuse requires the user's accepted application and an event not already occurred. Late-excuse threshold is three days relative to applicationDeadline, not event start. Excusing removes hired membership; late excuses increment lateExcuseCount and reset the good-event streak.
 
