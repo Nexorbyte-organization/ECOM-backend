@@ -15,6 +15,23 @@ import { updateApplicationDecision } from '../services/application-decision.serv
 import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrResponse } from '../utils/attendanceQr.js';
+import { checkInWindow, eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
+
+// Changes hired ushers need to hear about.
+const SCHEDULE_FIELDS = ['eventDate', 'startTime', 'endTime', 'location', 'gatheringLocation', 'budget', 'dressCode'];
+const SCHEDULE_FIELD_LABELS = {
+    eventDate: 'date', startTime: 'start time', endTime: 'end time', location: 'location',
+    gatheringLocation: 'meeting point', budget: 'pay', dressCode: 'dress code',
+};
+const scheduleSnapshot = (event) => ({
+    eventDate: new Date(event.eventDate).toISOString().slice(0, 10),
+    startTime: String(event.startTime ?? ''),
+    endTime: String(event.endTime ?? ''),
+    location: String(event.location ?? ''),
+    gatheringLocation: String(event.gatheringLocation ?? ''),
+    budget: Number(event.budget),
+    dressCode: String(event.dressCode ?? ''),
+});
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
 
@@ -306,8 +323,14 @@ export class OrganizerController {
             if (event.status !== 'open' || req.body.status !== 'cancelled') {
                 return next(new AppError('Only an open event can be cancelled directly. Other status changes require an admin.', 409));
             }
-            event.status = 'cancelled';
+            const { event: cancelled, notifyUserIds } = await EventService.changeStatus(id, 'cancelled', { organizerId });
+            await EventService.notifyCancellation(cancelled, notifyUserIds);
+            return res.status(200).json({ success: true, message: 'Event cancelled', data: cancelled });
         }
+        if (['completed', 'cancelled'].includes(event.status)) {
+            return next(new AppError(`A ${event.status} event can no longer be edited`, 409));
+        }
+        const scheduleBefore = scheduleSnapshot(event);
 
         const allowedFields = [
             'title', 'category', 'eventDate', 'applicationDeadline',
@@ -340,7 +363,34 @@ export class OrganizerController {
         if (Number(event.requiredCount) < (event.hiredTalents?.length || 0)) {
             return next(new AppError('Required staff count cannot be lower than the number already hired', 409));
         }
+        const hiredTalents = event.hiredTalents || [];
+        const scheduleAfter = scheduleSnapshot(event);
+        const changedScheduleFields = SCHEDULE_FIELDS.filter((field) => scheduleBefore[field] !== scheduleAfter[field]);
+        if (changedScheduleFields.includes('eventDate') && hiredTalents.length) {
+            const { start, end } = eventDayRange(event.eventDate);
+            const conflict = await Event.findOne({
+                where: {
+                    id: { [Op.ne]: event.id },
+                    eventDate: { [Op.gte]: start, [Op.lt]: end },
+                    status: { [Op.ne]: 'cancelled' },
+                    hiredTalents: { [Op.overlap]: hiredTalents },
+                },
+            });
+            if (conflict) {
+                return next(new AppError('Some hired ushers are already booked for another event on the new date', 409));
+            }
+        }
         await event.save();
+
+        if (changedScheduleFields.length && hiredTalents.length) {
+            await Promise.all(hiredTalents.map((userId) => NotificationService.create({
+                userId,
+                title: 'Event details changed',
+                message: `The organization updated “${event.title}” (${changedScheduleFields.map((field) => SCHEDULE_FIELD_LABELS[field]).join(', ')}). Check the new details.`,
+                type: 'warning',
+                link: `/talent/jobs/${event.id}`,
+            }).catch(() => undefined)));
+        }
 
         return res.status(200).json({
             success: true,
@@ -365,6 +415,26 @@ export class OrganizerController {
             success: true,
             message: 'Event closed for new applications',
             data: event,
+        });
+    }
+
+    // The owner marks an event completed once it has ended, which unlocks usher payments.
+    static async completeEvent(req, res, next) {
+        const organizerId = getOrganizerId(req.authUser);
+        const event = await Event.findOne({ where: { id: req.params.id, organizerId } });
+        if (!event) return next(new AppError(messages.event.notfound, 404));
+        if (!['open', 'confirmed'].includes(event.status)) {
+            return next(new AppError('Only an open or confirmed event can be completed', 409));
+        }
+        if (!hasEventEnded(event)) {
+            return next(new AppError('The event can be completed after it ends', 409));
+        }
+
+        const { event: completed } = await EventService.changeStatus(event.id, 'completed', { organizerId });
+        return res.status(200).json({
+            success: true,
+            message: 'Event marked as completed',
+            data: completed,
         });
     }
 
@@ -411,7 +481,7 @@ export class OrganizerController {
             });
             if (!lockedApplication) throw new AppError('Application not found', 404);
 
-            await User.findByPk(lockedApplication.talentId, {
+            const talent = await User.findByPk(lockedApplication.talentId, {
                 transaction,
                 lock: transaction.LOCK.UPDATE,
             });
@@ -421,6 +491,18 @@ export class OrganizerController {
                 lock: transaction.LOCK.UPDATE,
             });
             if (!lockedEvent) throw new AppError('Not authorized', 403);
+            if (['cancelled', 'completed'].includes(lockedEvent.status)) {
+                throw new AppError(`Applications for a ${lockedEvent.status} event can no longer change`, 409);
+            }
+            if (lockedApplication.status === 'excused') {
+                throw new AppError('This usher excused themselves from the event', 409);
+            }
+            if (hasEventStarted(lockedEvent)) {
+                throw new AppError('The event has started; record attendance instead of changing applications', 409);
+            }
+            if (status === 'accepted' && (!talent || talent.isBlocked)) {
+                throw new AppError('This usher can no longer be booked', 409);
+            }
             if (lockedApplication.isDirect && lockedApplication.status === 'pending' && status === 'accepted') {
                 throw new AppError('This booking invitation is waiting for the usher to accept it', 409);
             }
@@ -458,11 +540,10 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        // Attendance allowed only after deadline or when event is confirmed/closed (FR-ATT-02)
-        const now = new Date();
-        const deadline = new Date(event.applicationDeadline);
-        if (now < deadline && event.status === 'open') {
-            return next(new AppError('Attendance can only be marked after the application deadline has passed or event is closed', 400));
+        // Attendance is recorded on the event day, from when QR check-in opens (FR-ATT-02).
+        if (event.status === 'cancelled') return next(new AppError('Attendance cannot be recorded for a cancelled event', 409));
+        if (new Date() < checkInWindow(event).opensAt) {
+            return next(new AppError('Attendance can be recorded from 2 hours before the event starts', 409));
         }
 
         if (!event.hiredTalents.includes(talentId)) {
@@ -542,6 +623,14 @@ export class OrganizerController {
 
         if (!event.hiredTalents.includes(talentId)) {
             return next(new AppError('Talent was not hired for this event', 400));
+        }
+        if (event.status === 'cancelled') return next(new AppError('A cancelled event cannot be reviewed', 409));
+        if (event.status !== 'completed' && !hasEventEnded(event)) {
+            return next(new AppError('Ushers can be reviewed after the event ends', 409));
+        }
+        const attendance = await Attendance.findOne({ where: { eventId: id, talentId } });
+        if (!attendance || !['present', 'late'].includes(attendance.status)) {
+            return next(new AppError('Only ushers who attended can be reviewed', 409));
         }
 
         const existing = await Review.findOne({

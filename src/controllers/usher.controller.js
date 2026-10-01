@@ -9,13 +9,19 @@ import { ApiFeature } from '../utils/apiFeature.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
 import { normalizeEventCategories, normalizeEventCategory, normalizeLanguages } from '../utils/normalization.js';
 import { NotificationService } from '../services/notification.service.js';
-import { tryAutoAcceptApplication, updateApplicationDecision } from '../services/application-decision.service.js';
+import {
+    assertCanTakeNewBookings,
+    LATE_EXCUSE_LIMIT,
+    tryAutoAcceptApplication,
+    updateApplicationDecision,
+} from '../services/application-decision.service.js';
 import { TokenService } from '../utils/token.js';
 import { eventForTalent } from '../utils/eventVisibility.js';
 import { maskPaymentMethods, publicTalent, withoutSecrets } from '../utils/publicTalent.js';
 import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrMatchesEvent, parseAttendanceQrToken } from '../utils/attendanceQr.js';
+import { checkInStatusAt, hasEventStarted } from '../utils/eventSchedule.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
@@ -305,11 +311,16 @@ export class UsherController {
             if (event.status === 'cancelled' || event.status === 'completed') {
                 throw new AppError('Check-in is closed for this event', 409);
             }
-            if (event.status === 'open' && new Date() < new Date(event.applicationDeadline)) {
-                throw new AppError('Check-in is not open yet', 409);
-            }
             if (!(event.hiredTalents || []).includes(talentId)) {
                 throw new AppError('You are not hired for this event', 403);
+            }
+            // The QR only works on the event day, so a shared screenshot cannot be used remotely days early.
+            const arrivalStatus = checkInStatusAt(event);
+            if (arrivalStatus === 'early') {
+                throw new AppError('Check-in opens 2 hours before the event starts', 409);
+            }
+            if (arrivalStatus === 'closed') {
+                throw new AppError('Check-in is closed for this event', 409);
             }
 
             const talent = await User.findByPk(talentId, {
@@ -325,12 +336,13 @@ export class UsherController {
             const attendance = existingAttendance || await Attendance.create({
                 eventId: event.id,
                 talentId,
-                status: 'present',
+                status: arrivalStatus,
                 checkInTime: new Date(),
             }, { transaction });
 
-            if (existingAttendance) {
-                attendance.status = 'present';
+            // A repeated scan keeps the first arrival; an organizer's absent mark is replaced by the scan.
+            if (existingAttendance && !['present', 'late'].includes(previousStatus)) {
+                attendance.status = arrivalStatus;
                 attendance.checkInTime ||= new Date();
                 await attendance.save({ transaction });
             }
@@ -349,14 +361,16 @@ export class UsherController {
         });
 
         await checkAndAutoVerify(talentId);
+        const alreadyCheckedIn = previousStatus === 'present' || previousStatus === 'late';
 
         return res.status(200).json({
             success: true,
-            message: previousStatus === 'present' ? 'You are already checked in' : 'Attendance confirmed',
+            message: alreadyCheckedIn ? 'You are already checked in'
+                : attendance.status === 'late' ? 'Attendance confirmed (late arrival)' : 'Attendance confirmed',
             data: {
                 attendance,
                 event: { id: event.id, title: event.title, eventDate: event.eventDate },
-                alreadyCheckedIn: previousStatus === 'present',
+                alreadyCheckedIn,
             },
         });
     }
@@ -380,6 +394,7 @@ export class UsherController {
     static async applyToEvent(req, res, next) {
         const { eventId } = req.body;
         const talentId = req.authUser.id;
+        assertCanTakeNewBookings(req.authUser);
 
         const event = await Event.findByPk(eventId);
         if (!event) return next(new AppError(messages.event.notfound, 404));
@@ -528,7 +543,8 @@ export class UsherController {
                 throw new AppError('This booking invitation has already been answered', 409);
             }
 
-            await User.findByPk(talentId, { transaction, lock: transaction.LOCK.UPDATE });
+            const talent = await User.findByPk(talentId, { transaction, lock: transaction.LOCK.UPDATE });
+            if (decision === 'accept') assertCanTakeNewBookings(talent);
             const lockedEvent = await Event.findByPk(lockedApplication.eventId, {
                 transaction,
                 lock: transaction.LOCK.UPDATE,
@@ -579,8 +595,8 @@ export class UsherController {
         const event = await Event.findByPk(application.eventId);
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        if (new Date() > new Date(event.eventDate)) {
-            return next(new AppError('Cannot excuse from an event that has already occurred', 400));
+        if (['cancelled', 'completed'].includes(event.status) || hasEventStarted(event)) {
+            return next(new AppError('Cannot excuse from an event that has already started', 400));
         }
 
         // Determine late excuse (BR-04)
@@ -619,7 +635,7 @@ export class UsherController {
         return res.status(200).json({
             success: true,
             message: isLateExcuse
-                ? `Excused with late penalty. Late excuse count: ${lateExcuseCount}/5`
+                ? `Excused with late penalty. Late excuse count: ${lateExcuseCount}/${LATE_EXCUSE_LIMIT}`
                 : 'Excused successfully. No penalty applied.',
             data: { applicationStatus: application.status, isLateExcuse, lateExcuseCount },
         });
@@ -874,6 +890,7 @@ export class UsherController {
         const referral = await Referral.findOne({ where: { id: referralId, referredTalentId: talentId } });
         if (!referral) return next(new AppError('Referral not found', 404));
         if (referral.status !== 'pending') return next(new AppError('Referral is no longer pending', 400));
+        assertCanTakeNewBookings(req.authUser);
 
         const event = await Event.findByPk(referral.eventId);
         if (!event) return next(new AppError(messages.event.notfound, 404));

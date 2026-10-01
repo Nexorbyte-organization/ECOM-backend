@@ -1,6 +1,8 @@
 import { Notification, User } from '../../db/index.js';
 import { EmailService } from '../utils/email.js';
 
+const EMAIL_WAIT_MS = 5000;
+
 const escapeHtml = (value) => String(value)
   .replaceAll('&', '&amp;')
   .replaceAll('<', '&lt;')
@@ -15,11 +17,16 @@ export class NotificationService {
     if (sendEmail && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       const user = await User.findByPk(userId, { attributes: ['email'] });
       if (user?.email) {
-        EmailService.sendEmail({
+        const delivery = EmailService.sendEmail({
           to: user.email,
           subject: title,
           html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#0f172a"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p></div>`,
         }).catch(() => undefined);
+        // Serverless functions can be frozen once the response is sent, which drops unawaited
+        // email. There, wait briefly for delivery; elsewhere keep sending in the background.
+        if (process.env.VERCEL) {
+          await Promise.race([delivery, new Promise((resolve) => setTimeout(resolve, EMAIL_WAIT_MS))]);
+        }
       }
     }
 

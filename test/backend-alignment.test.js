@@ -132,7 +132,9 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 111);
+  assert.equal(routes.size, 113);
+  assert.ok(routes.has('authRouter:POST /resend-verification'));
+  assert.ok(routes.has('organizerRouter:PATCH /events/:id/complete'));
   assert.ok(routes.has('usherRouter:PATCH /applications/:applicationId/respond'));
   assert.ok(routes.has('adminRouter:POST /organizations/:id/switch'));
   assert.ok(routes.has('adminRouter:POST /organizations/stop'));
@@ -201,4 +203,10 @@ test('all frontend-alignment route groups are registered', async () => {
     rate: 0,
   }).toJSON();
   assert.equal(organizerJson.autoAcceptHighRatedTalents, true);
+});
+
+test('sorting ignores secret, contact, and malformed fields', async () => {
+  const { ApiFeature } = await import('../src/utils/apiFeature.js');
+  const { order } = new ApiFeature({ sort: '-rate,password,refreshTokenHash,email,createdAt,"x" desc' }).sort().build();
+  assert.deepEqual(order, [['rate', 'DESC'], ['createdAt', 'ASC']]);
 });

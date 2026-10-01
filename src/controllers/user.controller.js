@@ -170,9 +170,37 @@ export class UserController {
         });
     }
 
+    // resendVerification — same answer whether or not the account exists or is already verified
+    static async resendVerification(req, res, next) {
+        const email = req.body.email.toLowerCase();
+        const response = {
+            success: true,
+            message: 'If an unverified account exists for that email, a new verification link has been sent.',
+        };
+
+        const user = await User.findOne({ where: { email } });
+        if (!user || user.isEmailVerified) return res.status(200).json(response);
+
+        const token = TokenService.generatePurposeToken({
+            payload: { id: user.id, email },
+            purpose: 'email_verification',
+            expiresIn: '24h',
+        });
+        try {
+            await EmailService.sendEmail({
+                to: email,
+                subject: 'Email Confirmation',
+                html: HtmlTemplateService.emailConfirmation(token),
+            });
+        } catch {
+            return next(new AppError('Failed to send verification email. Please try again.', 500));
+        }
+        return res.status(200).json(response);
+    }
+
     // forgetPassword — OTP is hashed before storing
     static async forgetPassword(req, res, next) {
-        const { email } = req.body;
+        const email = req.body.email.toLowerCase();
 
         const userExist = await User.findOne({ where: { email } });
 
@@ -231,18 +259,15 @@ export class UserController {
 
     // verifyOtp — compares against hashed OTP; returns error if expired (no auto-resend)
     static async verifyOtp(req, res, next) {
-        const { otp, email } = req.body;
+        const { otp } = req.body;
+        const email = req.body.email.toLowerCase();
 
         const user = await User.findOne({ where: { email } });
-        if (!user) {
-            return next(new AppError(messages.user.notfound, 404));
-        }
-
         const currentTime = Date.now();
-        const otpExpiryTime = user.otpExpiry ? new Date(user.otpExpiry).getTime() : 0;
+        const otpExpiryTime = user?.otpExpiry ? new Date(user.otpExpiry).getTime() : 0;
 
-        // If OTP doesn't exist or has expired — tell user to request a new one
-        if (!user.otp || otpExpiryTime <= currentTime) {
+        // An unknown email gets the same answer as an expired code, so this does not reveal accounts.
+        if (!user || !user.otp || otpExpiryTime <= currentTime) {
             return next(new AppError('OTP has expired. Please request a new one via /forget-password.', 400));
         }
 

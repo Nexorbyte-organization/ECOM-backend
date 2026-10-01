@@ -254,6 +254,54 @@
         }
       }
     },
+    "/auth/resend-verification": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Resend the email verification link",
+        "description": "Sends a new 24-hour verification link to an unverified account. The response is the\nsame whether or not the account exists or is already verified.\n",
+        "operationId": "resendVerification",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "description": "Too many authentication attempts"
+          }
+        }
+      }
+    },
     "/auth/forget-password": {
       "post": {
         "tags": [
@@ -1713,6 +1761,54 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/organizer/events/{id}/complete": {
+      "patch": {
+        "tags": [
+          "Organizers"
+        ],
+        "summary": "Mark an ended event completed",
+        "description": "Owner only, complete profile required. Allowed for an open or confirmed event after its\nend time (event date + endTime in APP_TIMEZONE, default Africa/Cairo). Remaining pending\napplications are rejected and pending referrals declined. Completion unlocks usher payments.\n",
+        "operationId": "completeEvent",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/EventIdParam"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessResponse"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/Event"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The event has not ended or is not open/confirmed"
           }
         }
       }

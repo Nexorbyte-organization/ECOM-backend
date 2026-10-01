@@ -18,6 +18,7 @@ const authLimiter = rateLimit({
 // Public auth routes (with schema validation)
 authRouter.post('/signup', authLimiter, ValidationMiddleware.isValid(UserValidator.signup), ErrorHandler.asyncHandler(UserController.signup));
 authRouter.post('/login', authLimiter, ValidationMiddleware.isValid(UserValidator.login), ErrorHandler.asyncHandler(UserController.login));
+authRouter.post('/resend-verification', authLimiter, ValidationMiddleware.isValid(UserValidator.forgetPassword), ErrorHandler.asyncHandler(UserController.resendVerification));
 authRouter.post('/forget-password', authLimiter, ValidationMiddleware.isValid(UserValidator.forgetPassword), ErrorHandler.asyncHandler(UserController.forgetPassword));
 authRouter.post('/verify-otp', authLimiter, ValidationMiddleware.isValid(UserValidator.verifyOtp), ErrorHandler.asyncHandler(UserController.verifyOtp));
 authRouter.post('/reset-password', authLimiter, ValidationMiddleware.isValid(UserValidator.resetPassword), ErrorHandler.asyncHandler(UserController.resetPassword));

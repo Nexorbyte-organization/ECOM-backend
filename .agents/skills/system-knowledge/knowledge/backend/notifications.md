@@ -3,7 +3,7 @@
 ## Current behavior
 Notification stores recipient, title/message, type, optional frontend link, and read state. Authenticated users list, mark one/all read, and clear their own notifications.
 
-NotificationService persists first, then optionally sends escaped HTML email if EMAIL_USER and EMAIL_PASS are configured. Delivery is asynchronous and failures are swallowed; persistence is not proof of email delivery. Event/application/referral/staff/payment workflows use this service. Auth verification/reset email is separate.
+NotificationService persists first, then optionally sends escaped HTML email if EMAIL_USER and EMAIL_PASS are configured. Delivery is asynchronous and failures are swallowed, except on Vercel (`VERCEL` set), where the request waits up to 5 seconds for delivery because the function can be frozen after the response; persistence is not proof of email delivery. Event/application/referral/staff/payment workflows use this service. Auth verification/reset email is separate.
 
 Settlement collection and usher payout state do not depend on notification persistence. A notification failure after a confirmed payment or payout does not mark the transfer failed or prevent remaining queued payouts.
 
