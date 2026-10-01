@@ -3,6 +3,7 @@ import { sequelize } from '../../db/connection.js';
 import {
   Attendance,
   Event,
+  EventFunding,
   EventSettlement,
   OrganizerCard,
   OrganizerCardEnrollment,
@@ -27,30 +28,27 @@ import {
   encryptCardToken,
 } from '../services/card-token.service.js';
 import { resolveSettlementPayoutMethod } from '../services/payout-method.service.js';
-import { classifyPayoutStatus, isPayoutSandboxConfigured, sendSandboxPayout } from '../services/paymob-payout.service.js';
-
-const PLATFORM_FEE_PERCENT = 5;
+import { isPayoutSandboxConfigured } from '../services/paymob-payout.service.js';
+import {
+  EXPIRED_CHECKOUT_GRACE_MS,
+  PLATFORM_FEE_PERCENT,
+  STALE_PREPARATION_MS,
+  UNVERIFIED_EXPIRY_GRACE_MS,
+  calculateSettlementLineAmounts,
+  getCheckoutCard,
+  isPaidTransaction,
+  maskDestination,
+  processAutomaticPayouts,
+  reconcileStaleCheckout as reconcileCheckout,
+  serializeSettlement,
+  staleCheckoutAction,
+  updateAggregatePayoutStatus,
+} from '../services/settlement.service.js';
+import { FundingService } from '../services/funding.service.js';
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
 
-const maskDestination = (value) => {
-  const normalized = String(value || '').replace(/\s+/g, '');
-  if (!normalized) return null;
-  return `${'*'.repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
-};
-
-export const calculateSettlementLineAmounts = (budget) => {
-  const grossAmountCents = Math.round(Number(budget) * 100);
-  if (!Number.isFinite(grossAmountCents) || grossAmountCents <= 0) {
-    throw new AppError('Event budget must be a positive amount', 400);
-  }
-  const platformFeeCents = Math.round(grossAmountCents * (PLATFORM_FEE_PERCENT / 100));
-  return {
-    grossAmountCents,
-    platformFeeCents,
-    usherAmountCents: grossAmountCents - platformFeeCents,
-  };
-};
+export { calculateSettlementLineAmounts, staleCheckoutAction, STALE_PREPARATION_MS, EXPIRED_CHECKOUT_GRACE_MS, UNVERIFIED_EXPIRY_GRACE_MS };
 
 const loadEligibleUshers = async (event) => {
   const attendance = await Attendance.findAll({
@@ -126,39 +124,6 @@ const lineValues = (line, settlement, event) => ({
   payoutStatus: line.payoutStatus,
 });
 
-const publicLine = (line, talent = null) => {
-  const values = line.toJSON ? line.toJSON() : { ...line };
-  delete values.payoutDestination;
-  delete values.payoutMetadata;
-  return {
-    ...values,
-    payoutDestinationMasked: maskDestination(line.payoutDestination),
-    talent: talent ? {
-      _id: talent.id,
-      userId: talent.id,
-      fullName: talent.fullName,
-      photo: talent.portfolioPicture?.secure_url || '',
-    } : undefined,
-  };
-};
-
-const serializeSettlement = async (settlement) => {
-  const lines = await SettlementLine.findAll({
-    where: { settlementId: settlement.id },
-    order: [['createdAt', 'ASC']],
-  });
-  const talentIds = lines.map((line) => line.talentId);
-  const talents = talentIds.length
-    ? await User.findAll({ where: { id: { [Op.in]: talentIds } } })
-    : [];
-  const talentsById = new Map(talents.map((talent) => [talent.id, talent]));
-  return {
-    ...settlement.toJSON(),
-    payoutSandboxConfigured: isPayoutSandboxConfigured(),
-    lines: lines.map((line) => publicLine(line, talentsById.get(line.talentId))),
-  };
-};
-
 const saveOrganizerCardToken = async (obj, organizerId) => {
   const organizer = await User.findByPk(organizerId);
   if (!organizer) return false;
@@ -193,92 +158,13 @@ const saveOrganizerCardToken = async (obj, organizerId) => {
   return true;
 };
 
-const updateAggregatePayoutStatus = async (settlement) => {
-  const lines = await SettlementLine.findAll({ where: { settlementId: settlement.id } });
-  const statuses = lines.map((line) => line.payoutStatus);
-  if (statuses.length > 0 && statuses.every((status) => status === 'paid')) {
-    settlement.payoutStatus = 'paid';
-  } else if (statuses.some((status) => status === 'paid')) {
-    settlement.payoutStatus = 'partially_paid';
-  } else if (statuses.some((status) => ['queued', 'processing', 'cash_due'].includes(status))) {
-    settlement.payoutStatus = 'processing';
-  } else if (statuses.some((status) => status === 'failed')) {
-    settlement.payoutStatus = 'failed';
-  } else {
-    settlement.payoutStatus = 'not_started';
-  }
-  await settlement.save();
-};
-
-const processAutomaticPayouts = async (settlement, lineId = null) => {
-  const lines = await SettlementLine.findAll({
-    where: { settlementId: settlement.id, payoutStatus: 'queued', ...(lineId ? { id: lineId } : {}) },
-  });
-  if (!lines.length || !isPayoutSandboxConfigured()) {
-    await updateAggregatePayoutStatus(settlement);
-    return;
-  }
-
-  settlement.payoutStatus = 'processing';
-  await settlement.save();
-  for (const line of lines) {
-    const [claimed] = await SettlementLine.update(
-      { payoutStatus: 'processing' },
-      { where: { id: line.id, payoutStatus: 'queued' } },
-    );
-    if (!claimed) continue;
-    line.payoutStatus = 'processing';
-    const talent = await User.findByPk(line.talentId, { paranoid: false });
-    if (!talent) {
-      line.payoutStatus = 'failed';
-      line.failureReason = 'Usher account not found';
-      line.payoutRetrySafe = false;
-      await line.save();
-      continue;
-    }
-
-    try {
-      const payout = await sendSandboxPayout(line, talent);
-      line.paymobPayoutTransactionId = payout.transactionId;
-      line.failureReason = payout.description;
-      const outcome = classifyPayoutStatus(payout.status);
-      line.payoutStatus = outcome.status;
-      line.payoutRetrySafe = outcome.retrySafe;
-      if (outcome.status === 'paid') {
-        line.paidAt = new Date();
-      } else if (outcome.status === 'processing' && !payout.description) {
-        line.failureReason = payout.description || `Paymob payout status is ${payout.status || 'unknown'}; verify before retrying`;
-      }
-    } catch (error) {
-      line.payoutStatus = 'failed';
-      line.payoutRetrySafe = false;
-      line.failureReason = error.message;
-    }
-    await line.save();
-    if (line.payoutStatus === 'paid' && !talent.deletedAt) {
-      try {
-        await NotificationService.create({
-          userId: talent.id,
-          title: 'Event payment sent',
-          message: `Your ${line.usherAmountCents / 100} EGP payment was sent through Paymob Test Mode.`,
-          type: 'success',
-          link: '/talent/events',
-        });
-      } catch {
-        // A notification failure must not change a completed transfer into a failed payout.
-      }
-    }
-  }
-  await updateAggregatePayoutStatus(settlement);
-};
-
 const applySettlementTransaction = async (settlement, obj) => {
   if (Number(obj.amount_cents) !== settlement.collectionAmountCents || obj.currency !== settlement.currency) {
     throw new AppError('Paymob callback amount or currency does not match the settlement', 409);
   }
 
   const wasPaid = settlement.collectionStatus === 'paid';
-  const isPaid = obj.success === true && obj.pending === false && obj.error_occured === false;
+  const isPaid = isPaidTransaction(obj);
   const isRefunded = obj.is_refunded === true;
   if (wasPaid && !isPaid && !isRefunded) return { ignored: true };
 
@@ -311,58 +197,7 @@ const applySettlementTransaction = async (settlement, obj) => {
   return { ignored: false };
 };
 
-// Paymob does not send a callback for a checkout that was abandoned, so an expired checkout
-// would otherwise block the event forever. Once the checkout can no longer be paid, ask Paymob
-// what happened to the order; without inquiry credentials, wait long enough for any delayed
-// callback before treating the checkout as failed.
-export const STALE_PREPARATION_MS = 10 * 60 * 1000;
-export const EXPIRED_CHECKOUT_GRACE_MS = 15 * 60 * 1000;
-export const UNVERIFIED_EXPIRY_GRACE_MS = 24 * 60 * 60 * 1000;
-
-export const staleCheckoutAction = (settlement, now = new Date(), inquiryConfigured = false) => {
-  if (settlement?.collectionStatus === 'not_started') {
-    return now - new Date(settlement.updatedAt) > STALE_PREPARATION_MS ? 'fail_preparation' : null;
-  }
-  if (settlement?.collectionStatus !== 'pending' || !settlement.expiresAt) return null;
-  const expiredFor = now - new Date(settlement.expiresAt);
-  if (inquiryConfigured && settlement.paymobOrderId && expiredFor > EXPIRED_CHECKOUT_GRACE_MS) return 'inquire';
-  if (expiredFor > UNVERIFIED_EXPIRY_GRACE_MS) return 'fail_expired';
-  return null;
-};
-
-const reconcileStaleCheckout = async (settlement) => {
-  const action = staleCheckoutAction(settlement, new Date(), Boolean(process.env.PAYMOB_API_KEY?.trim()));
-  if (!action) return settlement;
-  if (action === 'fail_preparation') {
-    await settlement.update({
-      collectionStatus: 'failed',
-      collectionFailureReason: 'Checkout preparation was interrupted. Start a new payment.',
-    });
-    return settlement;
-  }
-  if (action === 'inquire') {
-    let transaction;
-    try {
-      transaction = await inquireOrderTransaction(settlement.paymobOrderId);
-    } catch {
-      return settlement; // Keep the checkout blocked until Paymob can be reached.
-    }
-    if (transaction) {
-      try {
-        await applySettlementTransaction(settlement, transaction);
-      } catch {
-        // A mismatched inquiry result is left for manual reconciliation.
-      }
-      return settlement;
-    }
-    if (transaction === undefined) return settlement;
-  }
-  await settlement.update({
-    collectionStatus: 'failed',
-    collectionFailureReason: 'The checkout expired without a payment. Start a new payment.',
-  });
-  return settlement;
-};
+const reconcileStaleCheckout = (settlement) => reconcileCheckout(settlement, applySettlementTransaction, inquireOrderTransaction);
 
 const requireOwnedCompletedEvent = async (eventId, authUser) => {
   const organizerId = getOrganizerId(authUser);
@@ -374,16 +209,12 @@ const requireOwnedCompletedEvent = async (eventId, authUser) => {
   return event;
 };
 
-const getCheckoutCard = async (cardId, organizerId) => {
-  if (!cardId) return null;
-  if (typeof cardId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(cardId)) {
-    throw new AppError('Invalid saved card ID', 400);
+// Post-event checkout is only for pay-after events; prefunded events are paid from held funds.
+const requirePayAfterEvent = (event) => {
+  if (event.fundingMode !== 'pay_after') {
+    throw new AppError('This event was funded in advance. Release its payments instead of starting a checkout.', 409);
   }
-  const card = await OrganizerCard.findOne({
-    where: { id: cardId, organizerId, isActive: true, isLive: false },
-  });
-  if (!card) throw new AppError('Saved card not found for this organization', 404);
-  return card;
+  return event;
 };
 
 const startCheckout = async ({ settlement, event, organizer, drafts, card }) => {
@@ -409,7 +240,7 @@ const startCheckout = async ({ settlement, event, organizer, drafts, card }) => 
 
 export class PaymentController {
   static async previewEventSettlement(req, res) {
-    const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
+    const event = requirePayAfterEvent(await requireOwnedCompletedEvent(req.params.id, req.authUser));
     const drafts = buildLineDrafts(await loadEligibleUshers(event), event.budget);
     const totals = summarizeDrafts(drafts);
     const savedCards = await OrganizerCard.findAll({
@@ -440,7 +271,7 @@ export class PaymentController {
   }
 
   static async createEventSettlement(req, res, next) {
-    const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
+    const event = requirePayAfterEvent(await requireOwnedCompletedEvent(req.params.id, req.authUser));
     const organizerId = getOrganizerId(req.authUser);
     const organizer = await User.findByPk(organizerId);
     const eligibleUshers = await loadEligibleUshers(event);
@@ -542,7 +373,7 @@ export class PaymentController {
   }
 
   static async createIndividualSettlement(req, res) {
-    const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
+    const event = requirePayAfterEvent(await requireOwnedCompletedEvent(req.params.id, req.authUser));
     const organizerId = getOrganizerId(req.authUser);
     const organizer = await User.findByPk(organizerId);
     const eligible = (await loadEligibleUshers(event))
@@ -726,6 +557,9 @@ export class PaymentController {
     if (settlement.organizerId !== getOrganizerId(req.authUser)) {
       return next(new AppError('Not authorized to update this settlement', 403));
     }
+    if (settlement.fundingSource !== 'checkout') {
+      return next(new AppError('This usher is paid from the event funds held in advance, not in cash', 409));
+    }
     if (settlement.collectionStatus !== 'paid') {
       return next(new AppError('Complete the Paymob collection before recording cash payouts', 409));
     }
@@ -802,6 +636,8 @@ export class PaymentController {
       }
       const settlement = await EventSettlement.findOne({
         where: { paymobOrderId: String(obj.order_id), isLive: false }, paranoid: false,
+      }) || await EventFunding.findOne({
+        where: { paymobOrderId: String(obj.order_id), source: 'paymob', isLive: false }, paranoid: false,
       });
       const enrollment = settlement ? null : await OrganizerCardEnrollment.findOne({
         where: { paymobOrderId: String(obj.order_id) }, paranoid: false,
@@ -844,6 +680,19 @@ export class PaymentController {
       ? await EventSettlement.findOne({ where: { [Op.or]: whereOptions, isLive: false }, paranoid: false })
       : null;
     if (!settlement) {
+      const fundingId = obj.payment_key_claims?.extra?.funding_id || obj.payment_key_claims?.extras?.funding_id;
+      const fundingWhere = [
+        orderId && { paymobOrderId: orderId },
+        specialReference && { specialReference: String(specialReference) },
+        fundingId && { id: String(fundingId) },
+      ].filter(Boolean);
+      const funding = fundingWhere.length
+        ? await EventFunding.findOne({ where: { [Op.or]: fundingWhere, source: 'paymob', isLive: false }, paranoid: false })
+        : null;
+      if (funding) {
+        const { ignored } = await FundingService.applyFundingTransaction(funding, obj);
+        return res.status(200).json({ success: true, received: true, ...(ignored ? { ignored: true } : {}) });
+      }
       const enrollment = orderId ? await OrganizerCardEnrollment.findOne({ where: { paymobOrderId: orderId }, paranoid: false }) : null;
       if (!enrollment) return next(new AppError('No test checkout matches this transaction', 404));
       if (String(obj.integration_id) !== String(getCardEnrollmentIntegrationId(config))) {

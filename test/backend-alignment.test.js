@@ -132,7 +132,14 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 111);
+  assert.equal(routes.size, 131);
+  assert.ok(routes.has('organizerRouter:POST /events/:id/funding'));
+  assert.ok(routes.has('organizerRouter:POST /events/:id/release-payments'));
+  assert.ok(routes.has('organizerRouter:POST /credit/withdrawals'));
+  assert.ok(routes.has('paymentRouter:GET /fundings/:fundingId'));
+  assert.ok(routes.has('usherRouter:POST /payments/holds/:holdId/dispute'));
+  assert.ok(routes.has('adminRouter:PATCH /payments/holds/:holdId/resolve'));
+  assert.ok(routes.has('adminRouter:PATCH /organizers/:id/payment-tier'));
   assert.ok(routes.has('authRouter:POST /resend-verification'));
   assert.ok(routes.has('organizerRouter:PATCH /events/:id/complete'));
   assert.ok(routes.has('usherRouter:PATCH /applications/:applicationId/respond'));

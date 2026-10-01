@@ -1,6 +1,29 @@
 # Settlements, Paymob, cards, and payouts
 
-## Current behavior
+## Advance funding (prefund) and trust tiers
+Every event has `fundingMode`. New events default to `prefund`; events that existed before advance funding were migrated to `pay_after` so they keep the post-event checkout described below. Rules and constants live in `src/services/funding-policy.js`; orchestration in `src/services/funding.service.js`.
+
+Prefund: required funding = hired ushers × budget (gross, in piasters). Paid `EventFunding` rows count toward it; pending, failed, and refunded rows do not. The owner funds through POST /organizer/events/:id/funding: organization credit is applied first (unless `useCredit: false`) as a `credit` funding row, and only the rest becomes one Paymob checkout (`paymob` row, special reference `OO-FUND-…`, redirect `/provider/payments/result?fundingId=…`). The event row and organization row are locked; a partial unique index allows only one not_started/pending checkout per event, and an active checkout with the same card and amount is reused. If the Paymob request fails, the applied credit stays on the event and only the checkout part is retried. Stale funding checkouts reconcile through the same rules as settlements.
+
+Closing (open→confirmed) a prefund event requires zero shortfall. Hires and pay rises after funding create a new shortfall due `FUNDING_DEADLINE_HOURS` (48) before start; overdue is shown to the organization, admins (underfunded list), and hired ushers (`paymentProtection: awaiting_funding` on GET /usher/events/:id). There is no scheduled job, so missing the deadline does not cancel anything automatically. Hired ushers are notified when an event becomes fully funded.
+
+Release (POST /organizer/events/:id/release-payments, owner; admin variant accepts `unmarkedAs`): the event must be completed and not released, every hired usher must have an attendance mark, and funding must cover the whole hired team. Present/late ushers get a `prefund` settlement (`OO-REL-…`, collectionStatus paid, no Paymob collection) with 95%/5% lines. Ushers without a supported payout account get `awaiting_method` lines instead of cash; adding or changing their default payout method queues and sends them. Absent ushers' gross pay becomes an `AbsenceHold` for `DISPUTE_WINDOW_HOURS` (72). Surplus (e.g. excused ushers) becomes credit. `fundsReleasedAt` makes release one-time; a released event cannot leave completed.
+
+Absence protection: an attendance created or confirmed by the usher's QR scan has `checkInMethod: qr` and the organization cannot mark it absent. A held absence can be disputed once by its usher before `releaseAfter`. If the organization changes the usher to present/late, or an admin decides for the usher, the hold is paid through an individual `prefund` settlement (`OO-AWARD-…`, line type `dispute_award`); an admin decision for the usher also sets attendance to present with method `admin`. An undisputed hold returns to organization credit after the window; this is applied lazily whenever holds, credit, or funding are read, because there is no scheduler. Holds are claimed with conditional updates and credit entries use unique references, so concurrent readers cannot settle twice.
+
+Cancellation (admin status change or approved cancel request) of a prefund event with paid funding, before release, splits funding by hours before start: ≥72h 100% credit; 24–72h 50% credit and 50% of each hired usher's pay as compensation; <24h (including after start) 0% credit and full compensation. Compensation is a `prefund` settlement (`OO-CANCEL-…`, line type `cancellation_compensation`, null attendance) paid like release lines. Underfunded events share compensation out of what was paid. A funded, unreleased event cannot be deleted until cancelled.
+
+Late and refunded payments: a funding checkout paid after the event was cancelled, released, deleted, or switched to pay-after becomes `late_funding_refund` credit. A Paymob refund callback of paid funding before release just removes it from the funded total; after release or after late credit it records a negative `chargeback` entry.
+
+Credit is an append-only ledger (`OrganizerCreditEntry`, signed piasters, unique `reference` per effect). Debits lock the organization user row. Owners can request one withdrawal at a time (reserved immediately as a negative entry, minimum 1 EGP); admins mark it paid with a transfer reference (paid outside the platform) or reject it, and the organization can cancel it while pending; rejection/cancellation adds a reversal entry. Admins can add signed adjustments with a note.
+
+Trust tiers: `trusted` organizations may switch an event to `pay_after` (PATCH /organizer/events/:id/funding-mode) while it has no funding and is not completed/cancelled; switching back to prefund is blocked once any settlement exists. Automatic trust requires ≥3 paid events (released prefund events or pay-after events with a paid checkout), no pay-after event with an unpaid present usher 7+ days after it ended, no admin dispute decided for an usher in the last 90 days, and a non-negative credit balance. `users.paymentTierOverride` (admin) wins. Closing a pay-after event requires the organization to be trusted at that moment.
+
+Account deletion is refused while an organization has non-zero credit, a pending withdrawal, or active holds, or while an usher has awaiting/queued/processing pay or active holds.
+
+## Pay-after settlements (post-event checkout)
+Settlement preview/create (bulk and individual) is only available for `pay_after` events; prefund events return 409. Cash marking is only for `checkout` settlements.
+
 Owner settlement preview/create requires an owned completed event. Eligible lines are hired ushers with present/late attendance; absent and unmarked ushers are excluded, and no eligible attendance is an error. Marking an usher absent is rejected once their payment has started, so a started payment never covers an absent usher.
 
 Budget is per usher. Gross cents = round(budget × 100); fee cents = round(gross × 5%); entitlement = gross minus fee. Digital lines collect gross and pay entitlement; cash lines collect fee only and the organizer pays entitlement in cash.
@@ -20,6 +43,16 @@ Saved card tokens use AES-256-GCM with a key derived from the configured Paymob 
 Saved-card removal sets `deletedAt` as well as disabling the card and selecting another default. Organization deletion hides its cards, enrollments, and settlements; event deletion hides its settlements. Valid HMAC payment callbacks explicitly include archived checkouts so an already-started collection can still be recorded and payable lines processed. Internal payout identity lookup includes archived ushers; no new notification is sent to deleted accounts. Late card-token callbacks and order-based inquiries cannot recreate a removed card or create a card for a deleted organization/checkout. Settlement lines replaced during checkout retry are soft deleted; a partial unique index on `(settlementId, talentId)` where `deletedAt IS NULL` permits a new active line while retaining prior attempts.
 
 ## Source entry points
+- `src/services/funding-policy.js`
+- `src/services/funding.service.js`
+- `src/services/absence-hold.service.js`
+- `src/services/organizer-credit.service.js`
+- `src/services/settlement.service.js`
+- `src/controllers/funding.controller.js`
+- `db/models/event-funding.model.js`
+- `db/models/organizer-credit-entry.model.js`
+- `db/models/credit-withdrawal.model.js`
+- `db/models/absence-hold.model.js`
 - `src/controllers/payment.controller.js`
 - `src/routers/payment.router.js`
 - `src/routers/organizer.router.js`
@@ -34,4 +67,4 @@ Saved-card removal sets `deletedAt` as well as disabling the card and selecting 
 - `test/paymob-payment.test.js`
 
 ## Change coupling
-Frontend settlement/result/card controls depend on these contracts. Unit tests do not establish merchant activation or live-service success.
+Frontend settlement/result/card controls, the event funding panel, the organization payments page, the usher held-pay list, and the admin payments page depend on these contracts. Unit tests do not establish merchant activation or live-service success. `test/fundingPolicy.test.js` covers the pure rules.

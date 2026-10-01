@@ -204,6 +204,30 @@ export const buildIntentionPayload = ({ settlement, event, organizer, lines, con
   };
 };
 
+// One checkout for the part of an event's advance funding not covered by organization credit.
+export const buildFundingIntentionPayload = ({ funding, event, organizer, config, cardToken }) => ({
+  amount: funding.amountCents,
+  currency: funding.currency,
+  payment_methods: cardToken ? [getCardEnrollmentIntegrationId(config)] : config.paymentMethods,
+  items: [{
+    name: `${event.title} — usher pay in advance`.slice(0, 255),
+    amount: funding.amountCents,
+    description: 'OO-Ushers event funding, held until the event payments are released',
+    quantity: 1,
+  }],
+  billing_data: billingData(organizer),
+  ...(cardToken ? { card_tokens: [cardToken] } : {}),
+  extras: {
+    funding_id: funding.id,
+    event_id: event.id,
+    organizer_id: funding.organizerId,
+  },
+  special_reference: funding.specialReference,
+  expiration: 3600,
+  notification_url: `${config.backendUrl}/payments/paymob/webhook`,
+  redirection_url: `${config.frontendUrl}/provider/payments/result?fundingId=${funding.id}`,
+});
+
 export const buildCardEnrollmentPayload = ({ enrollment, organizer, config, integrationId }) => ({
   amount: 1000,
   currency: 'EGP',
@@ -276,6 +300,11 @@ const postIntention = async (payload, config) => {
 export const createPaymobIntention = async ({ settlement, event, organizer, lines, cardToken }) => {
   const config = getPaymobTestConfig();
   return postIntention(buildIntentionPayload({ settlement, event, organizer, lines, config, cardToken }), config);
+};
+
+export const createFundingIntention = async ({ funding, event, organizer, cardToken }) => {
+  const config = getPaymobTestConfig();
+  return postIntention(buildFundingIntentionPayload({ funding, event, organizer, config, cardToken }), config);
 };
 
 export const getCardEnrollmentIntegrationId = () => {

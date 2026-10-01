@@ -3,6 +3,7 @@ import { sequelize } from '../../db/connection.js';
 import { Application, Attendance, Event, EventActionRequest, EventSettlement, Referral, Review } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { NotificationService } from './notification.service.js';
+import { FundingService } from './funding.service.js';
 
 // Status changes an admin may make. Leaving `completed` is only possible while no payment
 // has started, and `cancelled` is final.
@@ -23,6 +24,10 @@ export class EventService {
     const options = { transaction };
     const event = await Event.findByPk(eventId, { attributes: ['id'], lock: transaction.LOCK.UPDATE, ...options });
     if (!event) return 0;
+    // Deleting would hide money the organization already paid; cancelling settles it first.
+    if (await FundingService.heldFundsBlockDeletion(eventId, options)) {
+      throw new AppError('This event holds advance funding. Cancel it first so the funding is refunded or paid out.', 409);
+    }
     const relatedDeletes = [
       Attendance.destroy({ where: { eventId }, ...options }),
       Review.destroy({ where: { eventId }, ...options }),
@@ -54,6 +59,9 @@ export class EventService {
       throw new AppError(`An event cannot move from ${event.status} to ${status}`, 409);
     }
     if (event.status === status) return { event, notifyUserIds: [], previousStatus: status };
+    if (event.status === 'completed' && event.fundsReleasedAt) {
+      throw new AppError('This event’s payments have been released, so it can no longer leave completed', 409);
+    }
     if (event.status === 'completed') {
       const startedPayment = await EventSettlement.findOne({
         where: { eventId, collectionStatus: { [Op.ne]: 'failed' } },
@@ -77,11 +85,13 @@ export class EventService {
       }
     }
     event.status = status;
+    // Splits advance funding between organization credit and usher compensation.
+    const fundingResult = status === 'cancelled' ? await FundingService.settleCancellation(event, { transaction }) : null;
     await event.save({ transaction });
-    return { event, notifyUserIds, previousStatus };
+    return { event, notifyUserIds, previousStatus, fundingResult };
   }
 
-  static async notifyCancellation(event, userIds) {
+  static async notifyCancellation(event, userIds, fundingResult = null) {
     await Promise.all(userIds.map((userId) => NotificationService.create({
       userId,
       title: 'Event cancelled',
@@ -89,5 +99,6 @@ export class EventService {
       type: 'danger',
       link: '/talent/events',
     }).catch(() => undefined)));
+    await FundingService.afterCancellation(event, fundingResult);
   }
 }

@@ -119,6 +119,13 @@ export const EventSettlement = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // checkout: collected from the organization through Paymob after the event (pay-after events).
+    // prefund: paid from funds the organization already deposited for the event.
+    fundingSource: {
+      type: DataTypes.ENUM('checkout', 'prefund'),
+      allowNull: false,
+      defaultValue: 'checkout',
+    },
   },
   {
     timestamps: true,

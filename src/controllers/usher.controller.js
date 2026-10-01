@@ -22,8 +22,19 @@ import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrMatchesEvent, parseAttendanceQrToken } from '../utils/attendanceQr.js';
 import { checkInStatusAt, hasEventStarted } from '../utils/eventSchedule.js';
+import { FundingService } from '../services/funding.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
+
+// Event pay waiting for a payout account is sent once the usher adds one. A payout failure is
+// recorded on the payment line, so it must not fail the profile update.
+async function resumeHeldPayouts(talentId) {
+    try {
+        await FundingService.resumeAwaitingPayouts(talentId);
+    } catch {
+        // The line stays waiting and is retried the next time the payout account changes.
+    }
+}
 
 // FR-VER-01: Auto-verify talent after hitting performance thresholds
 const AUTO_VERIFY_MIN_EVENTS = 10;
@@ -294,7 +305,10 @@ export class UsherController {
             if (!application) return next(new AppError(messages.event.notfound, 404));
         }
 
-        return res.status(200).json({ success: true, data: eventForTalent(event, application?.status === 'accepted', req.authUser.id) });
+        const hired = application?.status === 'accepted';
+        const data = eventForTalent(event, hired, req.authUser.id);
+        if (hired) data.paymentProtection = await FundingService.protectionFor(event);
+        return res.status(200).json({ success: true, data });
     }
 
     static async checkInWithAttendanceQr(req, res, next) {
@@ -338,12 +352,18 @@ export class UsherController {
                 talentId,
                 status: arrivalStatus,
                 checkInTime: new Date(),
+                checkInMethod: 'qr',
             }, { transaction });
 
             // A repeated scan keeps the first arrival; an organizer's absent mark is replaced by the scan.
             if (existingAttendance && !['present', 'late'].includes(previousStatus)) {
                 attendance.status = arrivalStatus;
                 attendance.checkInTime ||= new Date();
+                attendance.checkInMethod = 'qr';
+                await attendance.save({ transaction });
+            } else if (existingAttendance && attendance.checkInMethod !== 'qr') {
+                // A manual present mark becomes QR-verified once the usher scans.
+                attendance.checkInMethod = 'qr';
                 await attendance.save({ transaction });
             }
 
@@ -1019,6 +1039,7 @@ export class UsherController {
         methods.push(newMethod);
         user.paymentMethods = methods;
         await user.save();
+        await resumeHeldPayouts(userId);
 
         return res.status(201).json({
             success: true,
@@ -1075,6 +1096,7 @@ export class UsherController {
         }));
         user.paymentMethods = methods;
         await user.save();
+        await resumeHeldPayouts(userId);
 
         return res.status(200).json({
             success: true,
