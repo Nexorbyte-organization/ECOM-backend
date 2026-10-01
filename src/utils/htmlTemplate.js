@@ -7,14 +7,15 @@ const BRAND = {
   muted: '#64748B',
 };
 
-const escapeHtml = (value = '') => String(value)
+export const escapeHtml = (value = '') => String(value)
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#039;');
 
-const appUrl = () => (process.env.FRONTEND_URL || 'https://usher-swart.vercel.app').replace(/\/$/, '');
+// FRONTEND_URL may list several allowed origins; links use the first one.
+const appUrl = () => ((process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://usher-swart.vercel.app').replace(/\/$/, '');
 const apiUrl = () => (process.env.BASE_URL || 'https://o-ushers.vercel.app').replace(/\/$/, '');
 
 function brandLockup() {
@@ -32,7 +33,7 @@ function brandLockup() {
 function button(label, href) {
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0">
     <tr><td align="center" bgcolor="${BRAND.orange}" style="border-radius:10px;">
-      <a href="${href}" target="_blank" style="display:inline-block;padding:14px 22px;border-radius:10px;font-family:Arial,'Segoe UI',sans-serif;font-size:14px;font-weight:700;line-height:20px;color:#FFFFFF;text-decoration:none;">${label}</a>
+      <a href="${escapeHtml(href)}" target="_blank" style="display:inline-block;padding:14px 22px;border-radius:10px;font-family:Arial,'Segoe UI',sans-serif;font-size:14px;font-weight:700;line-height:20px;color:#FFFFFF;text-decoration:none;">${escapeHtml(label)}</a>
     </td></tr>
   </table>`;
 }
@@ -71,7 +72,47 @@ function emailLayout({ preheader, eyebrow, title, body, action, footer }) {
 </html>`;
 }
 
+const NOTIFICATION_EYEBROWS = {
+  info: 'Update',
+  success: 'Good news',
+  warning: 'Heads up',
+  danger: 'Important',
+};
+
+// Button label for a notification's in-app link; unknown links fall back to a generic label.
+function notificationActionLabel(link) {
+  if (/^\/talent\/events\/[^/]+\/map$/.test(link)) return 'View your location';
+  if (/^\/(talent\/jobs|provider\/events)\/[^/]+$/.test(link)) return 'View event';
+  if (link === '/talent/events') return 'View my events';
+  if (/^\/(talent|provider)\/dashboard$/.test(link)) return 'Open dashboard';
+  return 'Open OO-Ushers';
+}
+
 export class HtmlTemplateService {
+  // Absolute target for a notification's link. Only app-relative links are kept; anything
+  // else opens the app home page.
+  static notificationUrl(link) {
+    return typeof link === 'string' && /^\/(?!\/)/.test(link) ? `${appUrl()}${link}` : appUrl();
+  }
+
+  // Branded email for an in-app notification, matching the account emails.
+  static notification({ title, message, type = 'info', link = null }) {
+    const safeTitle = escapeHtml(title);
+    const safeMessage = escapeHtml(message).replace(/\r?\n/g, '<br>');
+    return emailLayout({
+      preheader: escapeHtml(message),
+      eyebrow: NOTIFICATION_EYEBROWS[type] || NOTIFICATION_EYEBROWS.info,
+      title: safeTitle,
+      body: `<p style="margin:0;">${safeMessage}</p>`,
+      action: button(notificationActionLabel(link), this.notificationUrl(link)),
+      footer: 'You received this email because of activity on your OO-Ushers account.',
+    });
+  }
+
+  static notificationText({ message, link = null }) {
+    return `${message}\n\n${this.notificationUrl(link)}`;
+  }
+
   static emailConfirmation(token) {
     const verificationUrl = `${apiUrl()}/verify/${encodeURIComponent(token)}`;
     return emailLayout({

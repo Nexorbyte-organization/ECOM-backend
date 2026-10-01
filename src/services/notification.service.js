@@ -1,14 +1,8 @@
 import { Notification, User } from '../../db/index.js';
 import { EmailService } from '../utils/email.js';
+import { HtmlTemplateService } from '../utils/htmlTemplate.js';
 
 const EMAIL_WAIT_MS = 5000;
-
-const escapeHtml = (value) => String(value)
-  .replaceAll('&', '&amp;')
-  .replaceAll('<', '&lt;')
-  .replaceAll('>', '&gt;')
-  .replaceAll('"', '&quot;')
-  .replaceAll("'", '&#039;');
 
 export class NotificationService {
   static async create({ userId, title, message, type = 'info', link = null, sendEmail = true }) {
@@ -20,7 +14,8 @@ export class NotificationService {
         const delivery = EmailService.sendEmail({
           to: user.email,
           subject: title,
-          html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#0f172a"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(message)}</p></div>`,
+          html: HtmlTemplateService.notification({ title, message, type, link }),
+          text: HtmlTemplateService.notificationText({ message, link }),
         }).catch(() => undefined);
         // Serverless functions can be frozen once the response is sent, which drops unawaited
         // email. There, wait briefly for delivery; elsewhere keep sending in the background.
