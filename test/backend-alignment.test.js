@@ -132,7 +132,7 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 113);
+  assert.equal(routes.size, 111);
   assert.ok(routes.has('authRouter:POST /resend-verification'));
   assert.ok(routes.has('organizerRouter:PATCH /events/:id/complete'));
   assert.ok(routes.has('usherRouter:PATCH /applications/:applicationId/respond'));
@@ -143,7 +143,9 @@ test('all frontend-alignment route groups are registered', async () => {
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance'));
   assert.ok(routes.has('organizerRouter:POST /events/:id/attendance-qr'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance-qr'));
-  assert.ok(routes.has('organizerRouter:POST /events/:id/action-requests'));
+  // Organizations cannot cancel or delete events, directly or by request.
+  assert.ok(!routes.has('organizerRouter:POST /events/:id/action-requests'));
+  assert.ok(!routes.has('organizerRouter:DELETE /events/:id'));
   assert.ok(routes.has('adminRouter:PATCH /event-action-requests/:id'));
   assert.ok(routes.has('notificationRouter:PATCH /read-all'));
   assert.ok(routes.has('usherRouter:GET /profile/:id/reviews'));

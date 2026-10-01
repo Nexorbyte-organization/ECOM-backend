@@ -1,6 +1,6 @@
 import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventSettlement, SettlementLine } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
@@ -16,6 +16,7 @@ import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrResponse } from '../utils/attendanceQr.js';
 import { checkInWindow, eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
+import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields } from '../utils/eventEditing.js';
 
 // Changes hired ushers need to hear about.
 const SCHEDULE_FIELDS = ['eventDate', 'startTime', 'endTime', 'location', 'gatheringLocation', 'budget', 'dressCode'];
@@ -34,6 +35,15 @@ const scheduleSnapshot = (event) => ({
 });
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
+
+const hasStartedPayment = async (eventId, talentId) => {
+    const lines = await SettlementLine.findAll({ where: { eventId, talentId }, attributes: ['settlementId'] });
+    if (!lines.length) return false;
+    const started = await EventSettlement.count({
+        where: { id: { [Op.in]: lines.map((line) => line.settlementId) }, collectionStatus: { [Op.ne]: 'failed' } },
+    });
+    return started > 0;
+};
 
 export class OrganizerController {
 
@@ -319,30 +329,25 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        if (req.body.status !== undefined) {
-            if (event.status !== 'open' || req.body.status !== 'cancelled') {
-                return next(new AppError('Only an open event can be cancelled directly. Other status changes require an admin.', 409));
-            }
-            const { event: cancelled, notifyUserIds } = await EventService.changeStatus(id, 'cancelled', { organizerId });
-            await EventService.notifyCancellation(cancelled, notifyUserIds);
-            return res.status(200).json({ success: true, message: 'Event cancelled', data: cancelled });
-        }
         if (['completed', 'cancelled'].includes(event.status)) {
             return next(new AppError(`A ${event.status} event can no longer be edited`, 409));
         }
+        const locked = lockedEventFields(event, req.body);
+        if (locked.length) {
+            const stage = hasEventStarted(event) ? 'an event that has started' : `a ${event.status} event`;
+            return next(new AppError(`The ${locked.map((field) => EVENT_FIELD_LABELS[field]).join(', ')} of ${stage} can no longer be changed`, 409));
+        }
+        const changed = changedEventFields(event, req.body);
+        if (changed.includes('budget') && Number(req.body.budget) < Number(event.budget) && event.hiredTalents?.length) {
+            return next(new AppError('Pay cannot be lowered after ushers are hired', 409));
+        }
         const scheduleBefore = scheduleSnapshot(event);
 
-        const allowedFields = [
-            'title', 'category', 'eventDate', 'applicationDeadline',
-            'startTime', 'endTime', 'location', 'requiredCount',
-            'gatheringLocation', 'genderPreference', 'specifyGenders',
-            'malesCount', 'femalesCount', 'budget', 'dressCode', 'notes', 'whatsappGroupLink',
-        ];
-        allowedFields.forEach(field => {
-            if (req.body[field] !== undefined) event[field] = req.body[field];
+        changed.forEach(field => {
+            event[field] = req.body[field];
         });
 
-        if (req.body.category !== undefined) {
+        if (changed.includes('category')) {
             const category = normalizeEventCategory(req.body.category);
             if (!category) return next(new AppError('Invalid event category', 400));
             event.category = category;
@@ -355,7 +360,7 @@ export class OrganizerController {
             return next(new AppError('Application deadline must be before the event date', 400));
         }
         if (event.startTime >= event.endTime) return next(new AppError('End time must be after start time', 400));
-        if (req.body.eventDate !== undefined) {
+        if (changed.includes('eventDate')) {
             const startOfToday = new Date();
             startOfToday.setHours(0, 0, 0, 0);
             if (new Date(event.eventDate) < startOfToday) return next(new AppError('Event date cannot be in the past', 400));
@@ -549,6 +554,10 @@ export class OrganizerController {
         if (!event.hiredTalents.includes(talentId)) {
             return next(new AppError('Talent is not hired for this event', 400));
         }
+        // Absent ushers are left out of payment, so the mark cannot follow a started payment.
+        if (status === 'absent' && await hasStartedPayment(id, talentId)) {
+            return next(new AppError('Payment for this usher has already started, so they cannot be marked absent', 409));
+        }
 
         const previousAttendance = await Attendance.findOne({ where: { eventId: id, talentId } });
         const previousStatus = previousAttendance?.status;
@@ -639,7 +648,7 @@ export class OrganizerController {
         if (existing) return next(new AppError('You have already reviewed this talent for this event', 400));
 
         const review = await Review.create({
-            eventId: id, reviewerId: organizerId, reviewedUserId: talentId, rating, comment,
+            eventId: id, reviewerId: organizerId, reviewedUserId: talentId, rating, comment: comment || null,
         });
 
         // Recalculate talent's average rating
@@ -784,26 +793,6 @@ export class OrganizerController {
         });
     }
 
-    // DELETE /organizer/events/:id — organizer deletes own event
-    static async deleteEvent(req, res, next) {
-        const { id } = req.params;
-        const organizerId = getOrganizerId(req.authUser);
-
-        const event = await Event.findOne({ where: { id, organizerId } });
-        if (!event) return next(new AppError(messages.event.notfound, 404));
-        if (event.status !== 'open') {
-            return next(new AppError('Only open events can be deleted directly. Submit an admin action request instead.', 409));
-        }
-
-        await EventService.deleteWithRelations(id);
-        if (event.photo?.public_id) await CloudinaryService.deleteImage(event.photo.public_id).catch(() => undefined);
-
-        return res.status(200).json({
-            success: true,
-            message: messages.event.deleteSuccessfully,
-        });
-    }
-
     // PATCH /organizer/events/:id/supervisor — assign / remove supervisor from event
     static async assignSupervisor(req, res, next) {
         const { id } = req.params;
@@ -874,45 +863,6 @@ export class OrganizerController {
                 includedTalents,
                 excludedNoPhone,
             },
-        });
-    }
-
-    static async requestEventAction(req, res, next) {
-        const organizerId = getOrganizerId(req.authUser);
-        const { id: eventId } = req.params;
-        const { requestType, reason } = req.body;
-
-        const event = await Event.findOne({ where: { id: eventId, organizerId } });
-        if (!event) return next(new AppError(messages.event.notfound, 404));
-        if (event.status === 'open') {
-            return next(new AppError('Open events can be cancelled or deleted directly without admin approval', 409));
-        }
-
-        const existing = await EventActionRequest.findOne({
-            where: { eventId, requestType, status: 'pending' },
-        });
-        if (existing) return next(new AppError('A pending request of this type already exists', 409));
-
-        const request = await EventActionRequest.create({
-            eventId,
-            organizerId,
-            requestType,
-            reason: reason || null,
-        });
-
-        const admins = await User.findAll({ where: { role: 'admin', isBlocked: false }, attributes: ['id'] });
-        await Promise.all(admins.map((admin) => NotificationService.create({
-            userId: admin.id,
-            title: 'New event action request',
-            message: `${req.authUser.fullName} requested to ${requestType} “${event.title}”.`,
-            type: 'warning',
-            link: '/admin/events',
-        })));
-
-        return res.status(201).json({
-            success: true,
-            message: 'Event action request submitted for admin review',
-            data: request,
         });
     }
 }
