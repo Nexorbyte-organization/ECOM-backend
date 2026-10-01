@@ -15,6 +15,7 @@ import { EventFunding } from './models/event-funding.model.js';
 import { OrganizerCreditEntry } from './models/organizer-credit-entry.model.js';
 import { CreditWithdrawal } from './models/credit-withdrawal.model.js';
 import { AbsenceHold } from './models/absence-hold.model.js';
+import { OrganizationFavorite } from './models/organization-favorite.model.js';
 
 // export all models
 export {
@@ -34,4 +35,5 @@ export {
   OrganizerCreditEntry,
   CreditWithdrawal,
   AbsenceHold,
+  OrganizationFavorite,
 };
