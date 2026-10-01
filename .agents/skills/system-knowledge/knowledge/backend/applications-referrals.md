@@ -11,6 +11,8 @@ Organization decisions are closed once the event starts or is cancelled/complete
 
 Ushers with 5 or more late excuses (`LATE_EXCUSE_LIMIT`) cannot apply, accept referrals, or accept booking invitations until the counter is reset (by an admin or five good events). Organizations can still decide on their existing applications.
 
+An organization can preview the most recent past, non-cancelled event with a hired team via `GET /organizer/events/:id/last-team`. `POST /organizer/events/:id/rebook-last-team` sends pending direct-book invitations from that team to an owned open event. It skips existing applications and currently unavailable ushers, limits new invitations to unfilled slots after hired ushers and pending direct invitations, and reports invited IDs plus per-usher skip reasons. Repeating the request does not duplicate applications or notifications. The usher still accepts each invitation through the normal application flow. The frontend must use these endpoints to expose the rebook action.
+
 Excuse requires the user's accepted application and an event not already occurred. Late-excuse threshold is three days relative to applicationDeadline, not event start. Excusing removes hired membership; late excuses increment lateExcuseCount and reset the good-event streak.
 
 Referrals have pending/accepted/declined states. Existing-user referrals and purpose-bound new-user invite links are distinct. Public auth invite preview precedes authenticated redemption and acceptance/decline. Referral acceptance enters the application workflow.
@@ -23,6 +25,7 @@ Referrals have pending/accepted/declined states. Existing-user referrals and pur
 - `src/routers/usher.router.js`
 - `db/models/application.model.js`
 - `db/models/referral.model.js`
+- `src/controllers/organization-talent.controller.js`
 
 ## Change coupling
 Acceptance changes affect capacity, hired lists, frontend jobs/referrals, attendance, and settlement eligibility.
