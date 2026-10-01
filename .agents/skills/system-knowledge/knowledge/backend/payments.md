@@ -1,7 +1,7 @@
 # Settlements, Paymob, cards, and payouts
 
 ## Current behavior
-Owner settlement preview/create requires an owned completed event. Eligible lines are hired ushers with present/late attendance; no eligible attendance is an error.
+Owner settlement preview/create requires an owned completed event. Eligible lines are hired ushers with present/late attendance; absent and unmarked ushers are excluded, and no eligible attendance is an error. Marking an usher absent is rejected once their payment has started, so a started payment never covers an absent usher.
 
 Budget is per usher. Gross cents = round(budget × 100); fee cents = round(gross × 5%); entitlement = gross minus fee. Digital lines collect gross and pay entitlement; cash lines collect fee only and the organizer pays entitlement in cash.
 
