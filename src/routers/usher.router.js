@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
+import { FundingController } from '../controllers/funding.controller.js';
 import { UsherController } from '../controllers/usher.controller.js';
 import { EventMapController } from '../controllers/event-map.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
@@ -49,6 +50,10 @@ usherRouter.get('/applications/my', ...auth, ErrorHandler.asyncHandler(UsherCont
 usherRouter.get('/events/history', ...auth, ErrorHandler.asyncHandler(UsherController.getMyEventHistory));
 usherRouter.get('/events/:id', ...auth, ErrorHandler.asyncHandler(UsherController.getEventById));
 usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapController.getUsherMap));
+
+// Pay held because the usher was marked absent at a prefunded event, and disputes of that mark.
+usherRouter.get('/payments/holds', ...auth, ErrorHandler.asyncHandler(FundingController.listMyHolds));
+usherRouter.post('/payments/holds/:holdId/dispute', ...auth, ErrorHandler.asyncHandler(FundingController.disputeHold));
 
 // Event-day check-in from an organizer-displayed QR code.
 usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));

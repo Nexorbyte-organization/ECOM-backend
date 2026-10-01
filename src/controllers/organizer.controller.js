@@ -1,6 +1,8 @@
 import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
-import { User, Event, Application, Attendance, Review, Referral, EventSettlement, SettlementLine } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventSettlement, SettlementLine, AbsenceHold } from '../../db/index.js';
+import { FundingService } from '../services/funding.service.js';
+import { AbsenceHoldService } from '../services/absence-hold.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
@@ -412,6 +414,7 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
         if (event.status !== 'open') return next(new AppError('Only an open event can be closed', 409));
+        await FundingService.assertCanConfirm(event);
 
         event.status = 'confirmed';
         await event.save();
@@ -558,6 +561,25 @@ export class OrganizerController {
 
         const previousAttendance = await Attendance.findOne({ where: { eventId: id, talentId } });
         const previousStatus = previousAttendance?.status;
+        // A QR scan is the usher's own proof of arrival, so the organization cannot replace it.
+        if (status === 'absent' && previousAttendance?.checkInMethod === 'qr' && ['present', 'late'].includes(previousStatus)) {
+            return next(new AppError('This usher checked in with the event QR code, so they cannot be marked absent', 409));
+        }
+
+        // After a prefunded event's payments are released, an absent usher's pay is held for the
+        // dispute window. Correcting the mark sends that held pay to the usher.
+        if (event.fundsReleasedAt && ['present', 'late'].includes(status) && previousStatus === 'absent') {
+            const hold = await AbsenceHold.findOne({ where: { eventId: id, talentId } });
+            if (!hold) return next(new AppError('This event’s payments were already released', 409));
+            if (hold.status === 'returned_to_organizer') {
+                return next(new AppError('This usher’s held pay already returned to your credit. Contact support to pay them.', 409));
+            }
+            if (['held', 'disputed'].includes(hold.status)) {
+                await AbsenceHoldService.payToUsher({ hold, resolution: 'organizer_corrected', actorId: req.authUser.id, attendanceStatus: status });
+            }
+        } else if (event.fundsReleasedAt && !previousAttendance) {
+            return next(new AppError('This event’s payments were already released', 409));
+        }
         const [attendance, created] = await Attendance.findOrCreate({
             where: { eventId: id, talentId },
             defaults: { status, checkInTime: checkInTime || null },

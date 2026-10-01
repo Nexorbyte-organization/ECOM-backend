@@ -1,6 +1,7 @@
 import { Op } from 'sequelize';
 import { sequelize } from '../../db/connection.js';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, AbsenceHold, CreditWithdrawal, SettlementLine } from '../../db/index.js';
+import { OrganizerCreditService } from '../services/organizer-credit.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { ApiFeature } from '../utils/apiFeature.js';
@@ -250,8 +251,8 @@ export class AdminController {
         const { id } = req.params;
         const { status } = req.body;
 
-        const { event, notifyUserIds } = await EventService.changeStatus(id, status);
-        await EventService.notifyCancellation(event, notifyUserIds);
+        const { event, notifyUserIds, fundingResult } = await EventService.changeStatus(id, status);
+        await EventService.notifyCancellation(event, notifyUserIds, fundingResult);
 
         return res.status(200).json({
             success: true,
@@ -343,6 +344,8 @@ export class AdminController {
         const user = await User.findByPk(id);
         if (!user) return next(new AppError(messages.user.notfound, 404));
         if (user.role === 'admin') return next(new AppError('Admin accounts cannot be deleted', 403));
+        const moneyBlocker = await AdminController.unsettledMoneyFor(user);
+        if (moneyBlocker) return next(new AppError(moneyBlocker, 409));
 
         await sequelize.transaction(async (transaction) => {
             if (user.role === 'organizer') {
@@ -408,6 +411,29 @@ export class AdminController {
             success: true,
             message: messages.user.deleteSuccessfully,
         });
+    }
+
+    // Deleting an account must not strand money the platform holds for it or owes it.
+    static async unsettledMoneyFor(user) {
+        if (user.role === 'organizer') {
+            const [balance, pendingWithdrawals, activeHolds] = await Promise.all([
+                OrganizerCreditService.balance(user.id),
+                CreditWithdrawal.count({ where: { organizerId: user.id, status: 'pending' } }),
+                AbsenceHold.count({ where: { organizerId: user.id, status: { [Op.in]: ['held', 'disputed'] } } }),
+            ]);
+            if (balance !== 0) return `This organization has ${balance / 100} EGP of credit. Settle it before deleting the account.`;
+            if (pendingWithdrawals) return 'This organization has a credit withdrawal waiting for review.';
+            if (activeHolds) return 'This organization has usher pay held for an attendance dispute window.';
+        }
+        if (user.role === 'usher') {
+            const [waiting, activeHolds] = await Promise.all([
+                SettlementLine.count({ where: { talentId: user.id, payoutStatus: { [Op.in]: ['awaiting_method', 'queued', 'processing'] } } }),
+                AbsenceHold.count({ where: { talentId: user.id, status: { [Op.in]: ['held', 'disputed'] } } }),
+            ]);
+            if (waiting) return 'This usher still has event pay waiting to be sent.';
+            if (activeHolds) return 'This usher has held pay in an attendance dispute window.';
+        }
+        return null;
     }
 
     // US-300: Admin dashboard stats
@@ -482,8 +508,8 @@ export class AdminController {
         const eventTitle = event?.title || 'Event';
         if (req.body.decision === 'approved' && event) {
             if (request.requestType === 'cancel') {
-                const { notifyUserIds } = await EventService.changeStatus(event.id, 'cancelled');
-                await EventService.notifyCancellation(event, notifyUserIds);
+                const { event: cancelled, notifyUserIds, fundingResult } = await EventService.changeStatus(event.id, 'cancelled');
+                await EventService.notifyCancellation(cancelled, notifyUserIds, fundingResult);
             } else {
                 await EventService.deleteWithRelations(event.id, { preserveActionRequests: true });
             }

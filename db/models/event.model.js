@@ -126,6 +126,17 @@ export const Event = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // prefund: the organization funds usher pay in advance and it is released after the event.
+    // pay_after: a trusted organization pays through a post-event settlement checkout.
+    fundingMode: {
+      type: DataTypes.ENUM('prefund', 'pay_after'),
+      allowNull: false,
+      defaultValue: 'prefund',
+    },
+    fundsReleasedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     timestamps: true,

@@ -32,6 +32,12 @@ export const Attendance = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // qr: the usher scanned the event QR; the organization cannot override it with an absent mark.
+    checkInMethod: {
+      type: DataTypes.ENUM('qr', 'manual', 'admin'),
+      allowNull: false,
+      defaultValue: 'manual',
+    },
   },
   {
     timestamps: true,

@@ -2514,6 +2514,284 @@ paths:
       responses:
         '200': { description: Updated event }
 
+  /organizer/events/{id}/funding:
+    get:
+      tags: [Organizers]
+      summary: Advance funding status, release preview, held absences, and cancellation policy
+      description: Workspace members can read it; saved cards are included for the owner only.
+      operationId: getEventFunding
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Required, funded, shortfall, surplus, deadline, tier, credit, checkouts, release preview, and holds }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Organizers]
+      summary: Fund the hired team in advance (credit first, then a Paymob checkout)
+      operationId: startEventFunding
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cardId: { type: string, format: uuid, description: Saved test card to charge }
+                useCredit: { type: boolean, default: true }
+      responses:
+        '200': { description: The active checkout was reused }
+        '201': { description: Credit applied and/or a checkout created; checkoutUrl is null when credit covered everything }
+        '409': { description: Already funded, a checkout is in progress, the event is pay-after, cancelled, or released }
+
+  /organizer/events/{id}/funding-mode:
+    patch:
+      tags: [Organizers]
+      summary: Switch between advance funding and paying after the event (trusted organizations only)
+      operationId: setEventFundingMode
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties: { mode: { type: string, enum: [prefund, pay_after] } }
+      responses:
+        '200': { description: Updated event }
+        '403': { description: The organization is not trusted }
+        '409': { description: Funding or a post-event payment already started, or the event ended }
+
+  /organizer/events/{id}/release-payments:
+    post:
+      tags: [Organizers]
+      summary: Release a completed prefunded event's payments
+      description: Present/late ushers are paid from the held funds, absent ushers' pay is held for the dispute window, and surplus becomes credit.
+      operationId: releaseEventPayments
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Updated funding summary }
+        '409': { description: Event not completed, already released, unmarked attendance, or underfunded }
+
+  /organizer/credit:
+    get:
+      tags: [Organizers]
+      summary: Credit balance, ledger, withdrawals, and payment tier
+      operationId: getOrganizerCredit
+      responses:
+        '200': { description: Credit overview }
+
+  /organizer/credit/withdrawals:
+    post:
+      tags: [Organizers]
+      summary: Ask to withdraw credit as money (reviewed by an admin)
+      operationId: requestCreditWithdrawal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties: { amount: { type: number, description: EGP, at most two decimals } }
+      responses:
+        '201': { description: Request created and amount reserved }
+        '409': { description: Larger than the balance or another request is pending }
+
+  /organizer/credit/withdrawals/{withdrawalId}:
+    delete:
+      tags: [Organizers]
+      summary: Cancel a pending withdrawal and return the reserved credit
+      operationId: cancelCreditWithdrawal
+      parameters:
+        - { name: withdrawalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Credit overview }
+
+  /payments/fundings/{fundingId}:
+    get:
+      tags: [Organizers]
+      summary: Funding checkout result, polled after the Paymob redirect
+      operationId: getEventFundingCheckout
+      parameters:
+        - { name: fundingId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Funding status with the event's funding summary }
+
+  /usher/payments/holds:
+    get:
+      tags: [Ushers]
+      summary: Pay held because the usher was marked absent
+      operationId: listMyAbsenceHolds
+      responses:
+        '200': { description: Holds with event, amount, status, deadline, and canDispute }
+
+  /usher/payments/holds/{holdId}/dispute:
+    post:
+      tags: [Ushers]
+      summary: Dispute an absent mark before the window closes
+      operationId: disputeAbsenceHold
+      parameters:
+        - { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties: { reason: { type: string, maxLength: 1000 } }
+      responses:
+        '200': { description: Hold marked disputed }
+        '409': { description: Already disputed, settled, or the window closed }
+
+  /admin/payments/overview:
+    get:
+      tags: [Admins]
+      summary: Open disputes, pending withdrawals, and underfunded prefunded events
+      operationId: getAdminPaymentsOverview
+      responses:
+        '200': { description: Payment review queues }
+
+  /admin/payments/holds:
+    get:
+      tags: [Admins]
+      summary: List absence holds
+      operationId: listAbsenceHolds
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [held, disputed, returned_to_organizer, paid_to_usher] } }
+      responses:
+        '200': { description: Holds with event, usher, and organization }
+
+  /admin/payments/holds/{holdId}/resolve:
+    patch:
+      tags: [Admins]
+      summary: Decide a held absence for the usher (pay) or the organization (credit)
+      operationId: resolveAbsenceHold
+      parameters:
+        - { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [usher, organizer] }
+                note: { type: string }
+      responses:
+        '200': { description: Resolved hold }
+        '409': { description: Already settled }
+
+  /admin/payments/withdrawals/{withdrawalId}:
+    patch:
+      tags: [Admins]
+      summary: Record a withdrawal as paid (with transfer reference) or reject it
+      operationId: resolveCreditWithdrawal
+      parameters:
+        - { name: withdrawalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [paid, rejected] }
+                payoutReference: { type: string }
+                note: { type: string }
+      responses:
+        '200': { description: Resolved withdrawal }
+
+  /admin/payments/settlements/{settlementId}/process-payouts:
+    post:
+      tags: [Admins]
+      summary: Send queued usher payouts of a collected settlement
+      operationId: processQueuedPayouts
+      parameters:
+        - { name: settlementId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Settlement with line statuses }
+
+  /admin/organizers/{id}/payments:
+    get:
+      tags: [Admins]
+      summary: An organization's credit, ledger, withdrawals, and tier
+      operationId: getOrganizerPaymentProfile
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Payment profile }
+
+  /admin/organizers/{id}/payment-tier:
+    patch:
+      tags: [Admins]
+      summary: Force trusted or standard, or return to the automatic tier
+      operationId: setOrganizerPaymentTier
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { override: { type: string, enum: [standard, trusted], nullable: true } }
+      responses:
+        '200': { description: Evaluated tier }
+
+  /admin/organizers/{id}/credit-adjustments:
+    post:
+      tags: [Admins]
+      summary: Add or remove organization credit with a note
+      operationId: adjustOrganizerCredit
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, note]
+              properties:
+                amount: { type: number, description: Signed EGP amount }
+                note: { type: string }
+      responses:
+        '201': { description: Payment profile }
+
+  /admin/events/{id}/funding:
+    get:
+      tags: [Admins]
+      summary: Any event's funding summary
+      operationId: getEventFundingForAdmin
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Funding summary }
+
+  /admin/events/{id}/release-payments:
+    post:
+      tags: [Admins]
+      summary: Release a completed prefunded event, optionally deciding unmarked ushers
+      operationId: adminReleaseEventPayments
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { unmarkedAs: { type: string, enum: [present, absent], nullable: true } }
+      responses:
+        '200': { description: Funding summary }
+
 # ──────────────────────────────────────────────────────────────────────────────
 # COMPONENTS
 # ──────────────────────────────────────────────────────────────────────────────
