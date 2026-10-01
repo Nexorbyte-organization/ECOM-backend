@@ -15,7 +15,7 @@ import { updateApplicationDecision } from '../services/application-decision.serv
 import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
 import { attendanceQrResponse } from '../utils/attendanceQr.js';
-import { checkInWindow, eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
+import { eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
 import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields } from '../utils/eventEditing.js';
 
 // Changes hired ushers need to hear about.
@@ -545,11 +545,8 @@ export class OrganizerController {
         const event = await Event.findOne({ where: { id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
-        // Attendance is recorded on the event day, from when QR check-in opens (FR-ATT-02).
+        // The organization can record attendance at any time, except for a cancelled event.
         if (event.status === 'cancelled') return next(new AppError('Attendance cannot be recorded for a cancelled event', 409));
-        if (new Date() < checkInWindow(event).opensAt) {
-            return next(new AppError('Attendance can be recorded from 2 hours before the event starts', 409));
-        }
 
         if (!event.hiredTalents.includes(talentId)) {
             return next(new AppError('Talent is not hired for this event', 400));

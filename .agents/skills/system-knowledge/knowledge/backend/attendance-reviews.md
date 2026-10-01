@@ -1,7 +1,7 @@
 # Attendance, reviews, and performance
 
 ## Current behavior
-Attendance is unique per event/talent with present/absent/late states. Excused is an application state. Manual recording requires hired membership, a non-cancelled event, and the check-in window to have opened. Reviews require the event to be completed or ended, and the usher to have present/late attendance.
+Attendance is unique per event/talent with present/absent/late states. Excused is an application state. Manual recording requires hired membership and a non-cancelled event; the organization can record it at any time, independent of the QR check-in window. Reviews require the event to be completed or ended, and the usher to have present/late attendance.
 
 Owner generates one QR while open. Persisted creation timestamp/event ID form an HMAC-signed token; subsequent reads reproduce its URL. Check-in verifies signature/timestamp, hired membership, event not completed/cancelled, and the check-in window: from 2 hours before the event starts until 2 hours after it ends (event schedule in APP_TIMEZONE). Arriving more than 15 minutes after the start records late; otherwise present. A repeated scan keeps the first status and check-in time and reports alreadyCheckedIn; a scan replaces an absent mark. Repeats do not increment the good streak. No GPS check exists.
 
