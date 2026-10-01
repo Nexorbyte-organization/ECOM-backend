@@ -8,6 +8,7 @@ import { HashService } from '../utils/hashAndcompare.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { normalizeRole } from '../utils/normalization.js';
+import { eventStatus } from '../utils/constant/enums.js';
 import { findAvailableOrganization, issueSession } from '../services/session.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
@@ -126,7 +127,10 @@ export class AdminController {
         const { search, status } = req.query;
         const where = {};
 
-        if (status && status !== 'all') where.status = status;
+        if (status && status !== 'all') {
+            if (!Object.values(eventStatus).includes(status)) return next(new AppError('Invalid event status filter', 400));
+            where.status = status;
+        }
 
         if (search) {
             where[Op.or] = [
@@ -246,11 +250,8 @@ export class AdminController {
         const { id } = req.params;
         const { status } = req.body;
 
-        const event = await Event.findByPk(id);
-        if (!event) return next(new AppError(messages.event.notfound, 404));
-
-        event.status = status;
-        await event.save();
+        const { event, notifyUserIds } = await EventService.changeStatus(id, status);
+        await EventService.notifyCancellation(event, notifyUserIds);
 
         return res.status(200).json({
             success: true,
@@ -379,6 +380,9 @@ export class AdminController {
                 });
                 await Promise.all(hiredEvents.map(async (event) => {
                     event.hiredTalents = (event.hiredTalents || []).filter((userId) => userId !== id);
+                    event.mapPins = (event.mapPins || []).map((pin) => ({
+                        ...pin, usherIds: (pin.usherIds || []).filter((userId) => userId !== id),
+                    }));
                     await event.save({ transaction });
                 }));
             }
@@ -478,8 +482,8 @@ export class AdminController {
         const eventTitle = event?.title || 'Event';
         if (req.body.decision === 'approved' && event) {
             if (request.requestType === 'cancel') {
-                event.status = 'cancelled';
-                await event.save();
+                const { notifyUserIds } = await EventService.changeStatus(event.id, 'cancelled');
+                await EventService.notifyCancellation(event, notifyUserIds);
             } else {
                 await EventService.deleteWithRelations(event.id, { preserveActionRequests: true });
             }

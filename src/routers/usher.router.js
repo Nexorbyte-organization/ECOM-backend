@@ -53,6 +53,9 @@ usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapCo
 // Event-day check-in from an organizer-displayed QR code.
 usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));
 
+// US-211: Accept or decline a direct booking invitation
+usherRouter.patch('/applications/:applicationId/respond', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.respond), ErrorHandler.asyncHandler(UsherController.respondToBookingInvitation));
+
 // US-107: Excuse from an accepted event
 usherRouter.patch('/applications/:applicationId/excuse', ...auth, completeProfile, ErrorHandler.asyncHandler(UsherController.excuseFromEvent));
 

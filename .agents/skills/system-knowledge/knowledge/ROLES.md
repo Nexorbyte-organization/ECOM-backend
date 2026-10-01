@@ -1,7 +1,7 @@
 # Roles and authorization
 
-- `usher`: own profile, payout methods, applications/referrals/history, event browsing, QR check-in. Complete-profile gates protect selected application/referral/excuse mutations; check-in is not profile-gated.
-- `organizer`: owns company profile/events/staff. Owner-only routes include event creation/edit/delete/close, QR generation/read, supervisor assignment, WhatsApp creation, bulk and individual settlement creation, payout retry, cash marking, and card management.
+- `usher`: own profile, payout methods, applications/referrals/history, event browsing, QR check-in, and accepting/declining direct booking invitations (complete profile required). Complete-profile gates protect selected application/referral/excuse mutations; check-in is not profile-gated.
+- `organizer`: owns company profile/events/staff. Owner-only routes include event creation/edit/delete/close/complete, QR generation/read, supervisor assignment, WhatsApp creation, bulk and individual settlement creation, payout retry, cash marking, and card management.
 - `organizer_member`, `organizer_supervisor`: company workspace reads plus decisions, direct booking, attendance/reviews, and action requests where routed. providerOwnerId resolves company ownership. Current event queries scope to company, not supervisor assignment.
 - `admin`: platform users/events/action requests and authenticated settlement lookup. An admin can temporarily act as an active, unblocked organization owner through a scoped session; organization routes then use that owner's permissions, while admin routes require stopping the acting session first.
 

@@ -1,5 +1,22 @@
 import { Op } from 'sequelize';
 
+const SORTABLE_FIELD = /^-?[A-Za-z][A-Za-z0-9_]{0,63}$/;
+// Ordering by a secret leaks information about it, even without returning the value.
+const UNSORTABLE_FIELDS = new Set([
+  'password',
+  'otp',
+  'otpExpiry',
+  'otpAttempts',
+  'lastOtpRequest',
+  'otpVerified',
+  'refreshTokenHash',
+  'refreshTokenExpiresAt',
+  'paymentMethods',
+  'email',
+  'mobileNumber',
+  'whatsappNumber',
+]);
+
 export class ApiFeature {
   constructor(queryData) {
     this.queryData = queryData;
@@ -27,12 +44,13 @@ export class ApiFeature {
 
   sort() {
     if (this.queryData.sort) {
-      const sortFields = this.queryData.sort.split(',').map((field) => {
-        if (field.startsWith('-')) {
-          return [field.substring(1), 'DESC'];
-        }
-        return [field, 'ASC'];
-      });
+      const sortFields = String(this.queryData.sort)
+        .split(',')
+        .map((field) => field.trim())
+        .filter(
+          (field) => SORTABLE_FIELD.test(field) && !UNSORTABLE_FIELDS.has(field.replace(/^-/, '')),
+        )
+        .map((field) => (field.startsWith('-') ? [field.substring(1), 'DESC'] : [field, 'ASC']));
       this.queryOptions.order = sortFields;
     }
     return this;
