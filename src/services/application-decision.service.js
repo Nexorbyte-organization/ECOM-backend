@@ -1,8 +1,18 @@
 import { Op } from 'sequelize';
 import { Event } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
+import { eventDayRange } from '../utils/eventSchedule.js';
 
 export const AUTO_ACCEPT_MIN_RATING = 4.5;
+// Ushers who reach this many late excuses cannot take new work until an admin resets the counter
+// (or five good events reset it automatically).
+export const LATE_EXCUSE_LIMIT = 5;
+
+export function assertCanTakeNewBookings(talent) {
+    if ((talent?.lateExcuseCount || 0) >= LATE_EXCUSE_LIMIT) {
+        throw new AppError(`You have ${LATE_EXCUSE_LIMIT} late excuses, so you cannot take new events until an administrator reviews your account`, 403);
+    }
+}
 
 export function isAutoAcceptHighRatedTalentsEnabled(organizer) {
     const value = organizer?.organizationInfo?.autoAcceptHighRatedTalents;
@@ -21,10 +31,12 @@ export async function updateApplicationDecision({ application, event, status, tr
             throw new AppError('This event is already fully staffed', 409);
         }
 
+        // eventDate is a timestamp, so compare the whole calendar day rather than the exact instant.
+        const { start, end } = eventDayRange(event.eventDate);
         const conflictingEvent = await Event.findOne({
             where: {
                 id: { [Op.ne]: event.id },
-                eventDate: event.eventDate,
+                eventDate: { [Op.gte]: start, [Op.lt]: end },
                 status: { [Op.ne]: 'cancelled' },
                 hiredTalents: { [Op.contains]: [application.talentId] },
             },

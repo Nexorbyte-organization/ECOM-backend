@@ -17,6 +17,7 @@ import {
   getCardEnrollmentIntegrationId,
   getPaymobTestConfig,
   inquireCardTokens,
+  inquireOrderTransaction,
   verifyCardTokenHmac,
   verifyTransactionHmac,
 } from '../services/paymob.service.js';
@@ -271,6 +272,98 @@ const processAutomaticPayouts = async (settlement, lineId = null) => {
   await updateAggregatePayoutStatus(settlement);
 };
 
+const applySettlementTransaction = async (settlement, obj) => {
+  if (Number(obj.amount_cents) !== settlement.collectionAmountCents || obj.currency !== settlement.currency) {
+    throw new AppError('Paymob callback amount or currency does not match the settlement', 409);
+  }
+
+  const wasPaid = settlement.collectionStatus === 'paid';
+  const isPaid = obj.success === true && obj.pending === false && obj.error_occured === false;
+  const isRefunded = obj.is_refunded === true;
+  if (wasPaid && !isPaid && !isRefunded) return { ignored: true };
+
+  settlement.collectionStatus = isRefunded ? 'refunded' : isPaid ? 'paid' : obj.pending ? 'pending' : 'failed';
+  settlement.paymobTransactionId = String(obj.id);
+  settlement.paymentMethod = [obj.source_data?.type, obj.source_data?.sub_type].filter(Boolean).join(' — ') || null;
+  settlement.lastCallbackAt = new Date();
+  settlement.collectionFailureReason = settlement.collectionStatus === 'failed'
+    ? obj.data?.message || 'Paymob reported an unsuccessful payment'
+    : null;
+  if (settlement.collectionStatus === 'paid' && !settlement.collectedAt) settlement.collectedAt = new Date();
+  await settlement.save();
+
+  if (settlement.collectionStatus === 'paid') {
+    await processAutomaticPayouts(settlement);
+    if (!wasPaid && !settlement.deletedAt) {
+      try {
+        await NotificationService.create({
+          userId: settlement.organizerId,
+          title: 'Event payment received',
+          message: `Paymob confirmed the ${settlement.collectionAmountCents / 100} EGP test payment. Usher payouts are being processed.`,
+          type: 'success',
+          link: `/provider/events/${settlement.eventId}`,
+        });
+      } catch {
+        // Collection and payout state remain authoritative if notification delivery fails.
+      }
+    }
+  }
+  return { ignored: false };
+};
+
+// Paymob does not send a callback for a checkout that was abandoned, so an expired checkout
+// would otherwise block the event forever. Once the checkout can no longer be paid, ask Paymob
+// what happened to the order; without inquiry credentials, wait long enough for any delayed
+// callback before treating the checkout as failed.
+export const STALE_PREPARATION_MS = 10 * 60 * 1000;
+export const EXPIRED_CHECKOUT_GRACE_MS = 15 * 60 * 1000;
+export const UNVERIFIED_EXPIRY_GRACE_MS = 24 * 60 * 60 * 1000;
+
+export const staleCheckoutAction = (settlement, now = new Date(), inquiryConfigured = false) => {
+  if (settlement?.collectionStatus === 'not_started') {
+    return now - new Date(settlement.updatedAt) > STALE_PREPARATION_MS ? 'fail_preparation' : null;
+  }
+  if (settlement?.collectionStatus !== 'pending' || !settlement.expiresAt) return null;
+  const expiredFor = now - new Date(settlement.expiresAt);
+  if (inquiryConfigured && settlement.paymobOrderId && expiredFor > EXPIRED_CHECKOUT_GRACE_MS) return 'inquire';
+  if (expiredFor > UNVERIFIED_EXPIRY_GRACE_MS) return 'fail_expired';
+  return null;
+};
+
+const reconcileStaleCheckout = async (settlement) => {
+  const action = staleCheckoutAction(settlement, new Date(), Boolean(process.env.PAYMOB_API_KEY?.trim()));
+  if (!action) return settlement;
+  if (action === 'fail_preparation') {
+    await settlement.update({
+      collectionStatus: 'failed',
+      collectionFailureReason: 'Checkout preparation was interrupted. Start a new payment.',
+    });
+    return settlement;
+  }
+  if (action === 'inquire') {
+    let transaction;
+    try {
+      transaction = await inquireOrderTransaction(settlement.paymobOrderId);
+    } catch {
+      return settlement; // Keep the checkout blocked until Paymob can be reached.
+    }
+    if (transaction) {
+      try {
+        await applySettlementTransaction(settlement, transaction);
+      } catch {
+        // A mismatched inquiry result is left for manual reconciliation.
+      }
+      return settlement;
+    }
+    if (transaction === undefined) return settlement;
+  }
+  await settlement.update({
+    collectionStatus: 'failed',
+    collectionFailureReason: 'The checkout expired without a payment. Start a new payment.',
+  });
+  return settlement;
+};
+
 const requireOwnedCompletedEvent = async (eventId, authUser) => {
   const organizerId = getOrganizerId(authUser);
   const event = await Event.findOne({ where: { id: eventId, organizerId } });
@@ -365,6 +458,8 @@ export class PaymentController {
     const totals = summarizeDrafts(drafts);
     const cardId = req.body?.cardId || null;
     const card = await getCheckoutCard(cardId, organizerId);
+    const existingBulk = await EventSettlement.findOne({ where: { eventId: event.id, targetTalentId: null } });
+    if (existingBulk) await reconcileStaleCheckout(existingBulk);
     const prepared = await sequelize.transaction(async (transaction) => {
       await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
       const individual = await EventSettlement.findOne({
@@ -426,6 +521,7 @@ export class PaymentController {
   static async getEventSettlement(req, res) {
     const event = await requireOwnedCompletedEvent(req.params.id, req.authUser);
     const settlement = await EventSettlement.findOne({ where: { eventId: event.id, targetTalentId: null } });
+    if (settlement) await reconcileStaleCheckout(settlement);
     return res.status(200).json({
       success: true,
       data: settlement ? await serializeSettlement(settlement) : null,
@@ -438,6 +534,7 @@ export class PaymentController {
       where: { eventId: event.id, targetTalentId: { [Op.ne]: null } },
       order: [['createdAt', 'ASC']],
     });
+    for (const settlement of settlements) await reconcileStaleCheckout(settlement);
     return res.status(200).json({
       success: true,
       data: await Promise.all(settlements.map(serializeSettlement)),
@@ -461,6 +558,10 @@ export class PaymentController {
     const totals = summarizeDrafts(drafts);
     const cardId = req.body?.cardId || null;
     const card = await getCheckoutCard(cardId, organizerId);
+    const existing = await EventSettlement.findAll({
+      where: { eventId: event.id, [Op.or]: [{ targetTalentId: null }, { targetTalentId: eligible.talent.id }] },
+    });
+    for (const settlement of existing) await reconcileStaleCheckout(settlement);
 
     const prepared = await sequelize.transaction(async (transaction) => {
       await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
@@ -756,44 +857,8 @@ export class PaymentController {
       }
       return res.status(200).json({ success: true, received: true });
     }
-    if (Number(obj.amount_cents) !== settlement.collectionAmountCents || obj.currency !== settlement.currency) {
-      return next(new AppError('Paymob callback amount or currency does not match the settlement', 409));
-    }
-
-    const wasPaid = settlement.collectionStatus === 'paid';
-    const isPaid = obj.success === true && obj.pending === false && obj.error_occured === false;
-    const isRefunded = obj.is_refunded === true;
-    if (wasPaid && !isPaid && !isRefunded) {
-      return res.status(200).json({ success: true, received: true, ignored: true });
-    }
-    settlement.collectionStatus = isRefunded ? 'refunded' : isPaid ? 'paid' : obj.pending ? 'pending' : 'failed';
-    settlement.paymobTransactionId = String(obj.id);
-    settlement.paymentMethod = [obj.source_data?.type, obj.source_data?.sub_type].filter(Boolean).join(' — ') || null;
-    settlement.lastCallbackAt = new Date();
-    settlement.collectionFailureReason = settlement.collectionStatus === 'failed'
-      ? obj.data?.message || 'Paymob reported an unsuccessful payment'
-      : null;
-    if (settlement.collectionStatus === 'paid' && !settlement.collectedAt) settlement.collectedAt = new Date();
-    await settlement.save();
-
-    if (settlement.collectionStatus === 'paid') {
-      await processAutomaticPayouts(settlement);
-      if (!wasPaid && !settlement.deletedAt) {
-        try {
-          await NotificationService.create({
-            userId: settlement.organizerId,
-            title: 'Event payment received',
-            message: `Paymob confirmed the ${settlement.collectionAmountCents / 100} EGP test payment. Usher payouts are being processed.`,
-            type: 'success',
-            link: `/provider/events/${settlement.eventId}`,
-          });
-        } catch {
-          // Collection and payout state remain authoritative if notification delivery fails.
-        }
-      }
-    }
-
-    return res.status(200).json({ success: true, received: true });
+    const { ignored } = await applySettlementTransaction(settlement, obj);
+    return res.status(200).json({ success: true, received: true, ...(ignored ? { ignored: true } : {}) });
   }
 
   // Used only by future saved-card charging after Paymob enables the required CIT/MOTO integration.

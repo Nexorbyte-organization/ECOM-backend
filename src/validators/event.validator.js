@@ -74,6 +74,10 @@ export class ApplicationValidator {
     static updateStatus = joi.object({
         status: joi.string().valid('accepted', 'rejected').required(),
     }).required();
+
+    static respond = joi.object({
+        decision: joi.string().valid('accept', 'decline').required(),
+    }).required();
 }
 
 export class AttendanceValidator {

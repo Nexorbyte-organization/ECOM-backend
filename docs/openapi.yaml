@@ -190,6 +190,36 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /auth/resend-verification:
+    post:
+      tags: [Auth]
+      summary: Resend the email verification link
+      description: |
+        Sends a new 24-hour verification link to an unverified account. The response is the
+        same whether or not the account exists or is already verified.
+      operationId: resendVerification
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          description: Too many authentication attempts
+
   /auth/forget-password:
     post:
       tags: [Auth]
@@ -581,6 +611,10 @@ paths:
           description: Filter applications by event date.
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/SizeParam'
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 100 }
+          description: Alias for `size`.
       responses:
         '200':
           description: Paginated applications list
@@ -615,6 +649,50 @@ paths:
                       count: { type: integer, example: 7 }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /usher/applications/{applicationId}/respond:
+    patch:
+      tags: [Ushers]
+      summary: Accept or decline a direct booking invitation
+      description: |
+        Answers a pending direct booking (`isDirect: true`). Accepting checks capacity and
+        same-date bookings like any other acceptance; declining marks the application `rejected`.
+        The organization cannot accept a pending invitation on the usher's behalf.
+        Requires a complete profile.
+      operationId: respondToBookingInvitation
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [accept, decline] }
+      responses:
+        '200':
+          description: Invitation answered
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Application' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already answered, no longer available, fully staffed, or booked elsewhere that day
 
   /usher/applications/{applicationId}/excuse:
     patch:
@@ -994,6 +1072,35 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /organizer/events/{id}/complete:
+    patch:
+      tags: [Organizers]
+      summary: Mark an ended event completed
+      description: |
+        Owner only, complete profile required. Allowed for an open or confirmed event after its
+        end time (event date + endTime in APP_TIMEZONE, default Africa/Cairo). Remaining pending
+        applications are rejected and pending referrals declined. Completion unlocks usher payments.
+      operationId: completeEvent
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200':
+          description: Event completed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Event' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The event has not ended or is not open/confirmed
 
   /organizer/events/{id}/applicants:
     get:
@@ -2958,10 +3065,6 @@ components:
           type: string
           enum: [usher, organizer, admin]
           example: usher
-        rate:
-          type: number
-          minimum: 0
-          default: 0
         languages:
           type: array
           items:

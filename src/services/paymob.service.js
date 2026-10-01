@@ -287,16 +287,21 @@ export const getCardEnrollmentIntegrationId = () => {
   return integrationId;
 };
 
-export const inquireCardTokens = async (orderId) => {
-  const apiKey = process.env.PAYMOB_API_KEY?.trim();
-  if (!apiKey) return [];
-  const config = getPaymobTestConfig();
+const requestInquiryAuthToken = async (config, apiKey) => {
   const auth = await requestJson(`${config.baseUrl}/api/auth/tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ api_key: apiKey }),
   });
   if (!auth.token) throw new PaymobRequestError('Paymob did not return an inquiry auth token');
+  return auth.token;
+};
+
+export const inquireCardTokens = async (orderId) => {
+  const apiKey = process.env.PAYMOB_API_KEY?.trim();
+  if (!apiKey) return [];
+  const config = getPaymobTestConfig();
+  const auth = { token: await requestInquiryAuthToken(config, apiKey) };
   const tokens = await requestJson(`${config.baseUrl}/api/acceptance/order_card_tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -305,6 +310,22 @@ export const inquireCardTokens = async (orderId) => {
   if (tokens === null) return [];
   if (!Array.isArray(tokens)) throw new PaymobRequestError('Paymob returned an invalid card-token inquiry');
   return tokens;
+};
+
+// Returns the order's transaction, null when Paymob has no transaction for the order,
+// or undefined when inquiry is not configured.
+export const inquireOrderTransaction = async (orderId) => {
+  const apiKey = process.env.PAYMOB_API_KEY?.trim();
+  if (!apiKey || !orderId) return undefined;
+  const config = getPaymobTestConfig();
+  const authToken = await requestInquiryAuthToken(config, apiKey);
+  const transaction = await requestJson(`${config.baseUrl}/api/ecommerce/orders/transaction_inquiry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auth_token: authToken, order_id: Number(orderId) }),
+  }, true);
+  if (transaction === null || !transaction?.id) return null;
+  return transaction;
 };
 
 export const createCardEnrollmentIntention = async ({ enrollment, organizer }) => {

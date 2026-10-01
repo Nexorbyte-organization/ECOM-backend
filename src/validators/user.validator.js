@@ -11,15 +11,9 @@ export class UserValidator {
         mobileNumber: joi.string().pattern(/^\+?[0-9][0-9\s-]{8,18}$/).optional(),
         city: joi.string().optional(),
         experience: joi.number().integer().min(0).optional(),
-        portfolioPicture: joi.any().default({
-            secure_url: "https://res.cloudinary.com/dvz0zvpof/image/upload/v1727788484/Default_pfp.svg_v7dmtb.png",
-            public_id: "default_avatar"
-        }),
         role: joi.string().valid('usher', 'organizer', 'talent', 'provider').required(),
-        rate: joi.number().min(0).optional(),
         languages: joi.array().items(joi.string().min(2).max(50)).optional(),
         eventCategories: joi.array().items(joi.string().min(2).max(50)).optional(),
-        portfolio: joi.array().items(joi.any()).optional()
     }).required();
 
     static login = joi.object({

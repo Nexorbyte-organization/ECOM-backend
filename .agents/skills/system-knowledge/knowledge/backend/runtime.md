@@ -5,6 +5,8 @@ Node ES modules, Express 5, Sequelize/PostgreSQL. index.js sets security/CORS/se
 
 Aliases /usher and /talent share a router; /organizer and /provider share a router. Other prefixes: /auth, /admin, /notifications, /payments. /health reports server/database state; /docs/openapi.json exposes generated OpenAPI.
 
+List sorting (`?sort=`) ignores malformed field names and secret or contact fields. Optional `APP_TIMEZONE` (default Africa/Cairo) sets the zone for event schedules.
+
 Core configuration requires PG_URI and JWT_SECRET_KEY (at least 32 characters). Production validates base/frontend URL, email, and Cloudinary presence. Describe configuration names without values. Payments validate configuration separately.
 
 Startup connects/migrates DB and creates missing tables. Sequelize schema alteration is disabled by default to avoid dropping existing constraints. A developer can opt in only for a local development database with `DB_SYNC_ALTER=true` and `APP_ENV=dev`; `NODE_ENV=production` or `VERCEL` prevents it. Deployed schema changes need deliberate migrations. Do not run startup as a documentation-only check. npm test and npm run lint verify relevant code changes. Contract changes may require npm run generate:openapi and generated-doc review.

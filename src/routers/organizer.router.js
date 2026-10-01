@@ -62,6 +62,9 @@ organizerRouter.delete('/events/:id', ...ownerAuth, completeProfile, ErrorHandle
 // US-206: Close event (confirm)
 organizerRouter.patch('/events/:id/close', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.closeEvent));
 
+// Mark an ended event completed so its ushers can be paid.
+organizerRouter.patch('/events/:id/complete', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.completeEvent));
+
 // Assign / remove supervisor from event
 organizerRouter.patch('/events/:id/supervisor', ...ownerAuth, completeProfile, ValidationMiddleware.isValid(SupervisorValidator.assign), ErrorHandler.asyncHandler(OrganizerController.assignSupervisor));
 
