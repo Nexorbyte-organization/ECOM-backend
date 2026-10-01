@@ -6,7 +6,7 @@ import { EventMapController } from '../controllers/event-map.controller.js';
 import { StaffController } from '../controllers/staff.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
 import { ValidationMiddleware } from '../middlewares/validation.js';
-import { EventValidator, ApplicationValidator, AttendanceValidator, ReviewValidator, StaffValidator, SupervisorValidator, EventActionRequestValidator } from '../validators/event.validator.js';
+import { EventValidator, ApplicationValidator, AttendanceValidator, ReviewValidator, StaffValidator, SupervisorValidator } from '../validators/event.validator.js';
 import { OrganizerProfileValidator } from '../validators/user.validator.js';
 import { PaymentController } from '../controllers/payment.controller.js';
 
@@ -56,9 +56,6 @@ organizerRouter.put('/events/:id', ...ownerAuth, completeProfile, ValidationMidd
 // Upload or replace an event image after the event has been created.
 organizerRouter.patch('/events/:id/photo', ...ownerAuth, completeProfile, upload.single('photo'), ErrorHandler.asyncHandler(OrganizerController.uploadEventPhoto));
 
-// Delete own event (also deletes all its applications)
-organizerRouter.delete('/events/:id', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.deleteEvent));
-
 // US-206: Close event (confirm)
 organizerRouter.patch('/events/:id/close', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.closeEvent));
 
@@ -90,9 +87,6 @@ organizerRouter.get('/talents', ...workspaceAuth, ErrorHandler.asyncHandler(Orga
 
 // US-211: Direct book a talent (with schema validation)
 organizerRouter.post('/direct-book', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.directBook), ErrorHandler.asyncHandler(OrganizerController.directBookTalent));
-
-// Confirmed/completed events require admin approval before cancellation or deletion.
-organizerRouter.post('/events/:id/action-requests', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(EventActionRequestValidator.create), ErrorHandler.asyncHandler(OrganizerController.requestEventAction));
 
 organizerRouter.post('/events/:id/whatsapp-group', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.createWhatsAppGroup));
 

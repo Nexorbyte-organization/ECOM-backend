@@ -1,5 +1,5 @@
 import joi from 'joi';
-import { eventActionRequestStatus, eventActionRequestType, eventCategories, genderPreference, eventStatus } from '../utils/constant/enums.js';
+import { eventActionRequestStatus, eventCategories, genderPreference, eventStatus } from '../utils/constant/enums.js';
 
 const categorySchema = joi.string().custom((value, helpers) => {
     const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -52,7 +52,6 @@ export class EventValidator {
         dressCode: joi.string().allow('').optional(),
         notes: joi.string().allow('').optional(),
         whatsappGroupLink: joi.string().uri().allow('', null).optional(),
-        status: joi.string().valid('cancelled').optional(),
     }).min(1).required();
 }
 
@@ -99,7 +98,7 @@ export class ReviewValidator {
         eventId: joi.string().uuid().optional(),
         reviewerId: joi.string().uuid().optional(),
         rating: joi.number().integer().min(1).max(5).required(),
-        comment: joi.string().max(500).optional(),
+        comment: joi.string().trim().max(500).allow('', null).optional(),
     }).or('talentId', 'reviewedUserId').required();
 }
 
@@ -154,11 +153,6 @@ export class PaymentMethodValidator {
 }
 
 export class EventActionRequestValidator {
-    static create = joi.object({
-        requestType: joi.string().valid(...Object.values(eventActionRequestType)).required(),
-        reason: joi.string().max(1000).allow('').optional(),
-    }).required();
-
     static resolve = joi.object({
         decision: joi.string().valid(eventActionRequestStatus.APPROVED, eventActionRequestStatus.REJECTED).required(),
     }).required();

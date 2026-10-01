@@ -3,11 +3,11 @@
 ## Current behavior
 Event stores organizer, date/deadline/times, category/location/gathering point/photo, required count, optional male/female counts, per-usher budget, dress code/notes, hired talent IDs, supervisor IDs, and WhatsApp metadata.
 
-Statuses are open/confirmed/completed/cancelled. Creation starts open; owner close changes open to confirmed. Direct cancellation/deletion is limited to open events. Other cancellation/deletion uses admin action requests; duplicate pending requests of the same type are rejected.
+Statuses are open/confirmed/completed/cancelled. Creation starts open; owner close changes open to confirmed. Organizations cannot cancel or delete events: the organizer update rejects status changes, and there is no organizer delete or action-request route. Admins cancel/delete directly and still resolve action requests created before this rule.
 
 `src/utils/eventSchedule.js` turns the stored calendar day (`eventDate`, midnight UTC from the form date) plus local `startTime`/`endTime` into instants in `APP_TIMEZONE` (default Africa/Cairo); an end time at or before the start time means the event ends the next day. The owner can complete an open or confirmed event through PATCH /organizer/events/:id/complete once its end time has passed; completion unlocks payments. All status changes go through `EventService.changeStatus`, which enforces `EVENT_STATUS_TRANSITIONS` (cancelled is final; completed can move back to confirmed or to cancelled only while no settlement other than a failed one exists). Cancelling or completing rejects remaining pending applications and declines pending referrals; cancellation also notifies hired ushers and pending applicants. Admin status changes and approved cancel requests use the same path.
 
-Completed and cancelled events cannot be edited. Changing the date of an event with hired ushers is rejected when any of them is hired for another non-cancelled event that day. When the date, times, location, meeting point, pay, or dress code change, hired ushers are notified.
+Editing is staged by `src/utils/eventEditing.js`. Open events accept every field, except that pay cannot be lowered once ushers are hired. Confirmed events accept title, date, times, location, meeting point, dress code, notes, and WhatsApp link; staffing counts, gender split, category, deadline, and pay are locked. Once the event starts only notes and the WhatsApp link change. Completed and cancelled events cannot be edited. Values equal to the stored ones are ignored, so a form may resend unchanged fields; a changed locked field returns 409. Changing the date of an event with hired ushers is rejected when any of them is hired for another non-cancelled event that day. When the date, times, location, meeting point, pay, or dress code change, hired ushers are notified.
 
 Create/update validate times, dates/deadline, gender totals, and count relative to hired staff. Inspect both validators and controllers; their rules are not necessarily identical.
 
@@ -31,6 +31,7 @@ Event deletion soft deletes the event, applications, attendance, reviews, referr
 - `db/models/event.model.js`
 - `src/controllers/event-map.controller.js`
 - `db/models/event-action-request.model.js`
+- `src/utils/eventEditing.js`
 
 ## Change coupling
-Lifecycle changes can affect applications, attendance, payments, and frontend controls. Relevant check: test/eventVisibility.test.js.
+Lifecycle changes can affect applications, attendance, payments, and frontend controls. The frontend edit modal mirrors the edit stages. Relevant checks: test/eventVisibility.test.js, test/eventEditing.test.js.

@@ -1640,7 +1640,7 @@
           "Organizers"
         ],
         "summary": "Update event",
-        "description": "Updates any of the allowed event fields. Only the organizer who owns the event\ncan update it.\n",
+        "description": "Updates event details. Only the organizer who owns the event can update it, and\norganizations cannot cancel or delete events. Open events accept every field (pay\ncannot be lowered once ushers are hired); confirmed events accept title, date,\ntimes, location, meeting point, dress code, notes, and WhatsApp link; once the\nevent starts only notes and the WhatsApp link can change. Completed and cancelled\nevents are read-only. Unchanged values are ignored.\n",
         "operationId": "updateEvent",
         "parameters": [
           {
@@ -1685,37 +1685,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "Organizers"
-        ],
-        "summary": "Delete own event (US-NEW)",
-        "description": "Permanently deletes an event and **all its applications**.\nOnly the owning organizer can delete their event.\n",
-        "operationId": "deleteOrganizerEvent",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/EventIdParam"
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Event deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            }
           },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
+          "409": {
+            "description": "A submitted change is not allowed at the event's current stage"
           }
         }
       }
@@ -4001,57 +3973,6 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
-          }
-        }
-      }
-    },
-    "/organizer/events/{id}/action-requests": {
-      "post": {
-        "tags": [
-          "Organizers"
-        ],
-        "summary": "Request cancellation or deletion of a non-open event",
-        "operationId": "requestEventAction",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/EventIdParam"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "requestType"
-                ],
-                "properties": {
-                  "requestType": {
-                    "type": "string",
-                    "enum": [
-                      "cancel",
-                      "delete"
-                    ]
-                  },
-                  "reason": {
-                    "type": "string",
-                    "maxLength": 1000
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Request submitted for admin review"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "409": {
-            "description": "Duplicate pending request or event can be changed directly"
           }
         }
       }
