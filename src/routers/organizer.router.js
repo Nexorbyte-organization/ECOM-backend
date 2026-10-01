@@ -10,6 +10,7 @@ import { EventValidator, ApplicationValidator, AttendanceValidator, ReviewValida
 import { OrganizerProfileValidator } from '../validators/user.validator.js';
 import { PaymentController } from '../controllers/payment.controller.js';
 import { FundingController } from '../controllers/funding.controller.js';
+import { OrganizationTalentController } from '../controllers/organization-talent.controller.js';
 
 export const organizerRouter = Router();
 
@@ -85,6 +86,11 @@ organizerRouter.get('/events/:id/referrals', ...workspaceAuth, ErrorHandler.asyn
 
 // US-209: Search talent directory
 organizerRouter.get('/talents', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.searchTalents));
+organizerRouter.get('/favorite-talents', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizationTalentController.listFavorites));
+organizerRouter.put('/favorite-talents/:talentId', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizationTalentController.addFavorite));
+organizerRouter.delete('/favorite-talents/:talentId', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizationTalentController.removeFavorite));
+organizerRouter.get('/events/:id/last-team', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizationTalentController.getLastTeam));
+organizerRouter.post('/events/:id/rebook-last-team', ...workspaceAuth, completeProfile, ErrorHandler.asyncHandler(OrganizationTalentController.rebookLastTeam));
 
 // US-211: Direct book a talent (with schema validation)
 organizerRouter.post('/direct-book', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.directBook), ErrorHandler.asyncHandler(OrganizerController.directBookTalent));

@@ -1,6 +1,6 @@
 import { Op } from 'sequelize';
 import { sequelize } from '../../db/connection.js';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, AbsenceHold, CreditWithdrawal, SettlementLine } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, AbsenceHold, CreditWithdrawal, SettlementLine, OrganizationFavorite } from '../../db/index.js';
 import { OrganizerCreditService } from '../services/organizer-credit.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
@@ -397,6 +397,7 @@ export class AdminController {
                 Referral.destroy({ where: { [Op.or]: [{ referrerTalentId: id }, { referredTalentId: id }] }, transaction }),
                 EventActionRequest.destroy({ where: { organizerId: id }, transaction }),
                 Notification.destroy({ where: { userId: id }, transaction }),
+                OrganizationFavorite.destroy({ where: { [Op.or]: [{ organizerId: id }, { talentId: id }] }, transaction }),
             ]);
 
             await Promise.all([
