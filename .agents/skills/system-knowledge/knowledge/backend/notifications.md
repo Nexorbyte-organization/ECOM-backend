@@ -11,6 +11,10 @@ Assigning an usher to a map pin creates a notification naming the location and e
 
 Clearing notifications soft deletes them by setting `deletedAt`; cleared records disappear from lists and unread totals while remaining stored. User, staff, and organization deletion also soft delete their existing notifications.
 
+The protected event reminder cron emails hired ushers when an open/confirmed event enters its final 24 hours before `eventStartsAt`, using `APP_TIMEZONE` (default Africa/Cairo). The five-minute schedule normally sends shortly after that threshold; missed runs, failed deliveries, and hires made inside the window are caught up before the event starts. Cancelled, completed, deleted, and already-started events are skipped, and current hired membership is checked again before sending. The branded email includes the local date/time, location, meeting point and dress code when present, and `/talent/jobs/:id`. This reminder sends email only and awaits SMTP acceptance; it does not use the notification service's background delivery.
+
+`event_reminders` stores one successful delivery per event, usher, and start instant. An event row lock serializes overlapping deliveries; a changed date/time permits a new reminder for the new start instant. Clearing notifications does not reset delivery history. Failed sends remain retryable, and one recipient failure does not stop the sweep. SMTP and database commits are not atomic: a process failure after SMTP acceptance but before recording delivery can cause a duplicate on retry. Missing email configuration skips the sweep; missing/deleted recipients are skipped. New tables are created by the normal startup schema sync.
+
 ## Source entry points
 - `src/services/notification.service.js`
 - `src/controllers/notification.controller.js`
@@ -18,6 +22,8 @@ Clearing notifications soft deletes them by setting `deletedAt`; cleared records
 - `db/models/notification.model.js`
 - `src/utils/email.js`
 - `src/utils/htmlTemplate.js`
+- `src/services/event-reminder.service.js`
+- `db/models/event-reminder.model.js`
 - `src/controllers/user.controller.js`
 
 ## Change coupling

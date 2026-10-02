@@ -21,6 +21,10 @@
     {
       "path": "/internal/cron/event-automation",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/internal/cron/event-reminders",
+      "schedule": "*/5 * * * *"
     }
   ]
 }

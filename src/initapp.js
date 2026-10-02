@@ -12,6 +12,7 @@ import { User } from '../db/models/user.model.js';
 import { seedDemoData } from '../scripts/seed-demo-data.js';
 import { EventAutomationService } from './services/event-automation.service.js';
 import { timingSafeEqual } from 'crypto';
+import { EventReminderService } from './services/event-reminder.service.js';
 
 dotenv.config({ path: path.resolve('./.env') });
 
@@ -57,6 +58,22 @@ export const initApp = async (app, express) => {
     if (a.length !== b.length || !timingSafeEqual(a, b)) return next(new AppError('Invalid cron secret', 401));
     try {
       const result = await EventAutomationService.sweep({});
+      return res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  // Scheduled email reminders run independently of lifecycle/payment automation.
+  app.get('/internal/cron/event-reminders', async (req, res, next) => {
+    const secret = process.env.CRON_SECRET?.trim();
+    if (!secret) return next(new AppError('Event reminders cron is not configured', 403));
+    const provided = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    const a = Buffer.from(provided);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return next(new AppError('Invalid cron secret', 401));
+    try {
+      const result = await EventReminderService.sweep();
       return res.status(200).json({ success: true, data: result });
     } catch (error) {
       return next(error);
