@@ -94,7 +94,7 @@ export class OrganizationTalentController {
       if (!source) throw new AppError('No previous team is available', 404);
 
       const pendingDirect = await Application.count({
-        where: { eventId: event.id, isDirect: true, status: 'pending' }, transaction,
+        where: { eventId: event.id, isDirect: true, standbyInvite: false, status: 'pending' }, transaction,
       });
       let slots = Math.max(0, event.requiredCount - (event.hiredTalents || []).length - pendingDirect);
       const invited = [];

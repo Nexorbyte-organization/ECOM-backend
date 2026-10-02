@@ -28,6 +28,29 @@ export const Application = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: false,
     },
+    // The usher agreed to be on standby if the event is full. A standby invitation counts as
+    // agreement once accepted.
+    standbyOk: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    // A direct invitation to join the standby list rather than a hired spot.
+    standbyInvite: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    // Position in the standby queue: earliest is moved in first.
+    standbySince: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    // When the usher was moved in from standby; an excuse shortly after it is not late.
+    promotedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
     referredBy: {
       type: DataTypes.UUID,
       allowNull: true,

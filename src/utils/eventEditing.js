@@ -3,24 +3,25 @@ import { normalizeEventCategory } from './normalization.js';
 
 export const EVENT_EDITABLE_FIELDS = [
     'title', 'category', 'eventDate', 'applicationDeadline',
-    'startTime', 'endTime', 'location', 'requiredCount',
+    'startTime', 'endTime', 'location', 'requiredCount', 'standbyCount',
     'gatheringLocation', 'genderPreference', 'specifyGenders',
     'malesCount', 'femalesCount', 'budget', 'dressCode', 'notes', 'whatsappGroupLink',
     'venueLatitude', 'venueLongitude',
 ];
 
 // Once applications close, staffing and pay are fixed; ushers can still be told about
-// practical changes to the schedule, venue, and instructions.
+// practical changes to the schedule, venue, and instructions. Standby is unpaid, so its size
+// stays editable until the start.
 const CONFIRMED_EDITABLE_FIELDS = [
     'title', 'eventDate', 'startTime', 'endTime', 'location', 'gatheringLocation',
-    'dressCode', 'notes', 'whatsappGroupLink', 'venueLatitude', 'venueLongitude',
+    'dressCode', 'notes', 'whatsappGroupLink', 'venueLatitude', 'venueLongitude', 'standbyCount',
 ];
 // After the event starts only information for the people on site can change.
 const STARTED_EDITABLE_FIELDS = ['notes', 'whatsappGroupLink'];
 
 export const EVENT_FIELD_LABELS = {
     title: 'title', category: 'category', eventDate: 'date', applicationDeadline: 'application deadline',
-    startTime: 'start time', endTime: 'end time', location: 'location', requiredCount: 'staff count',
+    startTime: 'start time', endTime: 'end time', location: 'location', requiredCount: 'staff count', standbyCount: 'standby count',
     gatheringLocation: 'meeting point', genderPreference: 'gender preference', specifyGenders: 'gender split',
     malesCount: 'male count', femalesCount: 'female count', budget: 'pay', dressCode: 'dress code',
     notes: 'notes', whatsappGroupLink: 'WhatsApp group link',
@@ -28,7 +29,7 @@ export const EVENT_FIELD_LABELS = {
 };
 
 const DATE_FIELDS = new Set(['eventDate', 'applicationDeadline']);
-const NUMBER_FIELDS = new Set(['requiredCount', 'malesCount', 'femalesCount', 'budget', 'venueLatitude', 'venueLongitude']);
+const NUMBER_FIELDS = new Set(['requiredCount', 'standbyCount', 'malesCount', 'femalesCount', 'budget', 'venueLatitude', 'venueLongitude']);
 
 const comparable = (field, value) => {
     if (value === undefined || value === null || value === '') return null;

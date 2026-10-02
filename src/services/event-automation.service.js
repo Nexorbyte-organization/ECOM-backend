@@ -4,6 +4,7 @@ import { AttendanceService } from './attendance.service.js';
 import { EventService } from './event.service.js';
 import { FundingService } from './funding.service.js';
 import { fundingDeadline, releaseDueAt } from './funding-policy.js';
+import { StandbyService } from './standby.service.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Lazy sweeps run at most this often per scope in one server instance.
@@ -11,9 +12,9 @@ const SWEEP_THROTTLE_MS = 60 * 1000;
 const lastSweep = new Map();
 
 // Runs an event's time-based steps without anyone acting: cancel unfunded bookings at the funding
-// deadline, mark missed check-ins as no-shows when check-in closes, and complete the event and
-// release its payments 24 hours after it ends. Each step is idempotent, so the steps run whenever
-// an event is read and from the scheduled sweep.
+// deadline, release the standby list when the event starts, mark missed check-ins as no-shows
+// when check-in closes, and complete the event and release its payments 24 hours after it ends.
+// Each step is idempotent, so the steps run whenever an event is read and from the scheduled sweep.
 export class EventAutomationService {
     static async runForEvent(event, now = new Date()) {
         if (!event || event.deletedAt || event.status === 'cancelled') return;
@@ -21,6 +22,7 @@ export class EventAutomationService {
             await FundingService.enforceFundingDeadline(event, now);
             await event.reload();
         }
+        await StandbyService.releaseAtStart(event, now);
         await AttendanceService.finalizeAttendance(event, now);
 
         const due = releaseDueAt(event);

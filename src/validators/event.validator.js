@@ -25,6 +25,7 @@ export class EventValidator {
         gatheringLocation: joi.string().allow('').optional(),
         photo: joi.alternatives().try(joi.string(), joi.object()).optional(),
         requiredCount: joi.number().integer().min(1).required(),
+        standbyCount: joi.number().integer().min(0).default(0),
         specifyGenders: joi.boolean().default(false),
         malesCount: joi.number().integer().min(0).optional(),
         femalesCount: joi.number().integer().min(0).optional(),
@@ -52,6 +53,7 @@ export class EventValidator {
         gatheringLocation: joi.string().allow('').optional(),
         photo: joi.alternatives().try(joi.string(), joi.object()).allow(null).optional(),
         requiredCount: joi.number().integer().min(1).optional(),
+        standbyCount: joi.number().integer().min(0).optional(),
         specifyGenders: joi.boolean().optional(),
         malesCount: joi.number().integer().min(0).allow(null).optional(),
         femalesCount: joi.number().integer().min(0).allow(null).optional(),
@@ -68,6 +70,12 @@ export class EventValidator {
 export class ApplicationValidator {
     static apply = joi.object({
         eventId: joi.string().uuid().required(),
+        // The usher agrees to unpaid standby if the event is full.
+        standbyOk: joi.boolean().optional(),
+    }).required();
+
+    static referralInvite = joi.object({
+        eventId: joi.string().uuid().required(),
     }).required();
 
     static refer = joi.object({
@@ -78,10 +86,12 @@ export class ApplicationValidator {
     static directBook = joi.object({
         eventId: joi.string().uuid().required(),
         talentId: joi.string().uuid().required(),
+        // Invite the usher onto the standby list instead of a hired spot.
+        asStandby: joi.boolean().optional(),
     }).required();
 
     static updateStatus = joi.object({
-        status: joi.string().valid('accepted', 'rejected').required(),
+        status: joi.string().valid('accepted', 'rejected', 'standby').required(),
     }).required();
 
     static respond = joi.object({

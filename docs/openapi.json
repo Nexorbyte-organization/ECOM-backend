@@ -873,7 +873,7 @@
           "Ushers"
         ],
         "summary": "Apply to an event",
-        "description": "Submits an application to an open event. Business rules enforced:\n- **BR-01**: Cannot apply twice to the same event.\n- **BR-02**: Application deadline must not have passed.\n",
+        "description": "Submits an application to an open event. Business rules enforced:\n- **BR-01**: Cannot apply twice to the same event.\n- **BR-02**: Application deadline must not have passed.\n- With `standbyOk`, the usher agrees to unpaid standby: the organization can put them on\n  the standby list, and accepting them into a full event (or auto-accept) does so.\n",
         "operationId": "applyToEvent",
         "requestBody": {
           "required": true,
@@ -889,6 +889,11 @@
                     "type": "string",
                     "format": "uuid",
                     "example": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                  },
+                  "standbyOk": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "The usher agrees to be on standby if the event is full."
                   }
                 }
               }
@@ -1103,6 +1108,41 @@
           },
           "409": {
             "description": "Already answered, no longer available, fully staffed, or booked elsewhere that day"
+          }
+        }
+      }
+    },
+    "/usher/applications/{applicationId}/leave-standby": {
+      "patch": {
+        "tags": [
+          "Ushers"
+        ],
+        "summary": "Leave an event's standby list",
+        "description": "Moves a `standby` application to `withdrawn`. Standby is unpaid, so leaving carries no\npenalty. Fails with 409 if the usher is no longer on standby (for example, already moved\ninto the team).\n",
+        "operationId": "leaveStandby",
+        "parameters": [
+          {
+            "name": "applicationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Left the standby list"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Not on the standby list"
           }
         }
       }
@@ -2121,8 +2161,8 @@
         "tags": [
           "Organizers"
         ],
-        "summary": "Accept or reject an applicant",
-        "description": "Updates an application status to `accepted` or `rejected`.\n- Accepting adds the talent to `event.hiredTalents`.\n- Rejecting removes the talent from `event.hiredTalents`.\n",
+        "summary": "Accept, reject, or put an applicant on standby",
+        "description": "Updates an application status to `accepted`, `rejected`, or `standby`.\n- Accepting adds the talent to `event.hiredTalents`. Accepting into a full event puts an\n  usher who agreed to standby (`standbyOk`) on the standby list instead.\n- `standby` needs a pending application with `standbyOk`, room on the event's standby\n  list, and no booking for another event that day.\n- Rejecting removes the talent from `event.hiredTalents` (or from standby). Removing a\n  hired usher moves the first bookable standby usher into the team.\n",
         "operationId": "updateApplicationStatus",
         "parameters": [
           {
@@ -2150,7 +2190,8 @@
                     "type": "string",
                     "enum": [
                       "accepted",
-                      "rejected"
+                      "rejected",
+                      "standby"
                     ],
                     "example": "accepted"
                   }
@@ -2270,8 +2311,8 @@
         "tags": [
           "Organizers"
         ],
-        "summary": "Direct book a talent",
-        "description": "Directly books (auto-accepts) a talent to an open event without the\ntalent needing to apply first. Business rules:\n- **BR-12**: Direct booking is auto-accepted.\n- **BR-01**: Cannot book a talent who already has an application for the event.\n",
+        "summary": "Invite a talent to an event or its standby list",
+        "description": "Sends a booking invitation (a pending direct application) that only the usher can accept.\nWith `asStandby`, the invitation is for the standby list: it also works for a confirmed\nevent that has not started, needs room on the standby list, and accepting it puts the\nusher on standby. Business rules:\n- **BR-01**: Cannot invite a talent who already has an application for the event.\n",
         "operationId": "directBookTalent",
         "requestBody": {
           "required": true,
@@ -2291,7 +2332,12 @@
                   },
                   "talentId": {
                     "type": "string",
-                    "format": "uuid",
+                    "format": "uuid"
+                  },
+                  "asStandby": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Invite onto the standby list instead of a hired spot.",
                     "example": "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
                   }
                 }
@@ -5379,6 +5425,11 @@
             "type": "integer",
             "example": 10
           },
+          "standbyCount": {
+            "type": "integer",
+            "example": 3,
+            "description": "Unpaid on-call ushers who fill hired spots that open before the start. At most half the staff count, rounded up."
+          },
           "genderPreference": {
             "type": "string",
             "enum": [
@@ -5447,14 +5498,37 @@
               "pending",
               "accepted",
               "rejected",
-              "excused"
+              "excused",
+              "standby",
+              "withdrawn"
             ],
-            "example": "pending"
+            "example": "pending",
+            "description": "`standby`: on call and unpaid; moved in automatically, earliest first, when a hired\nspot opens before the start. `withdrawn`: the usher left standby or was booked for\nanother event that day. Standby ushers who were not needed become `rejected` at the start.\n"
           },
           "isDirect": {
             "type": "boolean",
             "example": false,
             "description": "True if created by a direct-book action."
+          },
+          "standbyOk": {
+            "type": "boolean",
+            "description": "The usher agreed to unpaid standby."
+          },
+          "standbyInvite": {
+            "type": "boolean",
+            "description": "A direct invitation to the standby list."
+          },
+          "standbySince": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Place in the standby queue."
+          },
+          "promotedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the usher was moved in from standby; an excuse within 2 hours is not late."
           },
           "referredBy": {
             "type": "string",
@@ -5903,6 +5977,12 @@
             "minimum": 1,
             "example": 10
           },
+          "standbyCount": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "At most half the staff count, rounded up."
+          },
           "genderPreference": {
             "type": "string",
             "enum": [
@@ -5967,6 +6047,11 @@
           "requiredCount": {
             "type": "integer",
             "minimum": 1
+          },
+          "standbyCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Editable until the event starts; cannot be lower than the current standby list."
           },
           "genderPreference": {
             "type": "string",

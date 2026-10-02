@@ -75,9 +75,11 @@ export class EventService {
     const previousStatus = event.status;
     let notifyUserIds = [];
     if (status === 'cancelled' || status === 'completed') {
-      const pending = await Application.findAll({ where: { eventId, status: 'pending' }, transaction });
+      // Pending applicants and anyone still on standby are released.
+      const waiting = { eventId, status: { [Op.in]: ['pending', 'standby'] } };
+      const pending = await Application.findAll({ where: waiting, transaction });
       if (pending.length) {
-        await Application.update({ status: 'rejected' }, { where: { eventId, status: 'pending' }, transaction });
+        await Application.update({ status: 'rejected' }, { where: waiting, transaction });
       }
       await Referral.update({ status: 'declined' }, { where: { eventId, status: 'pending' }, transaction });
       if (status === 'cancelled') {

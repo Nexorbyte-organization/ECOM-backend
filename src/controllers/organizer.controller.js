@@ -15,7 +15,8 @@ import { getMissingProfileFields, isProfileComplete } from '../utils/profileComp
 import { publicTalent, SECRET_USER_FIELDS, talentForOrganization } from '../utils/publicTalent.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
-import { updateApplicationDecision } from '../services/application-decision.service.js';
+import { maxStandbyCount, updateApplicationDecision } from '../services/application-decision.service.js';
+import { StandbyService } from '../services/standby.service.js';
 import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
 import { eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
@@ -38,6 +39,21 @@ const scheduleSnapshot = (event) => ({
 });
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
+
+const standbyLimitError = (requiredCount) => new AppError(
+    `Standby can be at most half the staff count (${maxStandbyCount(requiredCount)} for ${requiredCount} ushers)`, 400,
+);
+
+const APPLICATION_DECISION_NOTICES = {
+    accepted: (title) => ({ title: 'Application accepted', message: `Your application to “${title}” was accepted.`, type: 'success' }),
+    standby: (title) => ({
+        title: 'Added to standby',
+        message: `You’re on standby for “${title}”. If a spot opens before the event starts, you’ll be moved in automatically and notified.`,
+        type: 'info',
+    }),
+    rejected: (title) => ({ title: 'Application declined', message: `Your application to “${title}” was not selected.`, type: 'danger' }),
+    removedFromStandby: (title) => ({ title: 'Removed from standby', message: `You were removed from the standby list for “${title}”.`, type: 'info' }),
+};
 
 export class OrganizerController {
 
@@ -206,7 +222,7 @@ export class OrganizerController {
         const organizerId = getOrganizerId(req.authUser);
         const {
             title, category, eventDate, applicationDeadline,
-            startTime, endTime, location, requiredCount,
+            startTime, endTime, location, requiredCount, standbyCount = 0,
             gatheringLocation, genderPreference, specifyGenders,
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
             venueLatitude, venueLongitude,
@@ -215,6 +231,7 @@ export class OrganizerController {
         if (specifyGenders && Number(malesCount || 0) + Number(femalesCount || 0) !== Number(requiredCount)) {
             return next(new AppError('Male and female counts must add up to the required staff count', 400));
         }
+        if (Number(standbyCount) > maxStandbyCount(requiredCount)) return next(standbyLimitError(requiredCount));
         if (startTime >= endTime) return next(new AppError('End time must be after start time', 400));
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
@@ -226,7 +243,7 @@ export class OrganizerController {
 
         const event = await Event.create({
             organizerId, title, category: normalizeEventCategory(category), eventDate, applicationDeadline,
-            startTime, endTime, location, gatheringLocation, requiredCount,
+            startTime, endTime, location, gatheringLocation, requiredCount, standbyCount: Number(standbyCount) || 0,
             genderPreference: genderPreference || 'any', specifyGenders: Boolean(specifyGenders),
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
             venueLatitude: venueLatitude ?? null, venueLongitude: venueLongitude ?? null,
@@ -357,6 +374,13 @@ export class OrganizerController {
         if (Number(event.requiredCount) < (event.hiredTalents?.length || 0)) {
             return next(new AppError('Required staff count cannot be lower than the number already hired', 409));
         }
+        if (Number(event.standbyCount || 0) > maxStandbyCount(event.requiredCount)) return next(standbyLimitError(event.requiredCount));
+        if (changed.includes('standbyCount')) {
+            const onStandby = await Application.count({ where: { eventId: event.id, status: 'standby' } });
+            if (Number(event.standbyCount) < onStandby) {
+                return next(new AppError(`Standby count cannot be lower than the ${onStandby} usher(s) already on standby`, 409));
+            }
+        }
         const hiredTalents = event.hiredTalents || [];
         const scheduleAfter = scheduleSnapshot(event);
         const changedScheduleFields = SCHEDULE_FIELDS.filter((field) => scheduleBefore[field] !== scheduleAfter[field]);
@@ -375,6 +399,8 @@ export class OrganizerController {
             }
         }
         await event.save();
+        // A larger team is filled from standby first.
+        if (changed.includes('requiredCount')) await StandbyService.fillOpenSpotsQuietly(event.id);
 
         if (changedScheduleFields.length && hiredTalents.length) {
             await Promise.all(hiredTalents.map((userId) => NotificationService.create({
@@ -469,7 +495,7 @@ export class OrganizerController {
         const { status } = req.body;
         const organizerId = getOrganizerId(req.authUser);
 
-        const { application, event } = await sequelize.transaction(async (transaction) => {
+        const { application, event, outcome, previousStatus } = await sequelize.transaction(async (transaction) => {
             const lockedApplication = await Application.findByPk(applicationId, {
                 transaction,
                 lock: transaction.LOCK.UPDATE,
@@ -489,42 +515,52 @@ export class OrganizerController {
             if (['cancelled', 'completed'].includes(lockedEvent.status)) {
                 throw new AppError(`Applications for a ${lockedEvent.status} event can no longer change`, 409);
             }
-            if (lockedApplication.status === 'excused') {
-                throw new AppError('This usher excused themselves from the event', 409);
+            if (['excused', 'withdrawn'].includes(lockedApplication.status)) {
+                throw new AppError(lockedApplication.status === 'excused'
+                    ? 'This usher excused themselves from the event'
+                    : 'This usher left the standby list', 409);
             }
             if (hasEventStarted(lockedEvent)) {
                 throw new AppError('The event has started; record attendance instead of changing applications', 409);
             }
-            if (status === 'accepted' && (!talent || talent.isBlocked)) {
+            const booking = status === 'accepted' || status === 'standby';
+            if (booking && (!talent || talent.isBlocked)) {
                 throw new AppError('This usher can no longer be booked', 409);
             }
-            if (status === 'accepted' && talent.suspendedUntil && new Date(talent.suspendedUntil) > new Date()) {
+            if (booking && talent.suspendedUntil && new Date(talent.suspendedUntil) > new Date()) {
                 throw new AppError('This usher is suspended from new bookings after missed check-ins', 409);
             }
-            if (lockedApplication.isDirect && lockedApplication.status === 'pending' && status === 'accepted') {
+            if (lockedApplication.isDirect && lockedApplication.status === 'pending' && booking) {
                 throw new AppError('This booking invitation is waiting for the usher to accept it', 409);
             }
 
-            await updateApplicationDecision({
+            const previous = lockedApplication.status;
+            const result = await updateApplicationDecision({
                 application: lockedApplication,
                 event: lockedEvent,
                 status,
                 transaction,
+                // Accepting into a full event puts an usher who agreed to standby on the list.
+                overflowToStandby: true,
             });
-            return { application: lockedApplication, event: lockedEvent };
+            return { application: lockedApplication, event: lockedEvent, outcome: result, previousStatus: previous };
         });
 
+        const notice = outcome === 'rejected' && previousStatus === 'standby' ? 'removedFromStandby' : outcome;
         await NotificationService.create({
             userId: application.talentId,
-            title: status === 'accepted' ? 'Application accepted' : 'Application declined',
-            message: `Your application to “${event.title}” was ${status === 'accepted' ? 'accepted' : 'not selected'}.`,
-            type: status === 'accepted' ? 'success' : 'danger',
+            ...APPLICATION_DECISION_NOTICES[notice](event.title),
             link: `/talent/jobs/${event.id}`,
         });
+        // Removing a hired usher opens a spot for the standby list.
+        if (previousStatus === 'accepted' && outcome === 'rejected') await StandbyService.fillOpenSpotsQuietly(event.id);
 
+        const overflowed = status === 'accepted' && outcome === 'standby';
         return res.status(200).json({
             success: true,
-            message: `Application ${status} successfully`,
+            message: overflowed
+                ? 'The event is fully staffed, so this usher was added to standby'
+                : `Application ${outcome === 'standby' ? 'moved to standby' : outcome} successfully`,
             data: application,
         });
     }
@@ -672,12 +708,20 @@ export class OrganizerController {
 
     // US-211: Direct book a talent
     static async directBookTalent(req, res, next) {
-        const { talentId, eventId } = req.body;
+        const { talentId, eventId, asStandby = false } = req.body;
         const organizerId = getOrganizerId(req.authUser);
 
         const event = await Event.findOne({ where: { id: eventId, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
-        if (event.status !== 'open') return next(new AppError('Event is not open for bookings', 400));
+        // Standby is filled up to the start, so standby invitations also work after hiring closes.
+        const invitable = asStandby ? ['open', 'confirmed'].includes(event.status) && !hasEventStarted(event) : event.status === 'open';
+        if (!invitable) return next(new AppError('Event is not open for bookings', 400));
+        if (asStandby) {
+            const onStandby = await Application.count({ where: { eventId, status: 'standby' } });
+            if (onStandby >= Number(event.standbyCount || 0)) {
+                return next(new AppError(event.standbyCount ? 'The standby list for this event is full' : 'This event has no standby spots', 409));
+            }
+        }
 
         const talent = await User.findOne({ where: { id: talentId, role: 'usher', isBlocked: false } });
         if (!talent) return next(new AppError(messages.user.notfound, 404));
@@ -694,20 +738,22 @@ export class OrganizerController {
 
         // A direct booking is an invitation and remains pending until the usher accepts it.
         const application = await Application.create({
-            eventId, talentId, status: 'pending', isDirect: true, appliedAt: new Date(),
+            eventId, talentId, status: 'pending', isDirect: true, standbyInvite: Boolean(asStandby), appliedAt: new Date(),
         });
 
         await NotificationService.create({
             userId: talentId,
-            title: 'New booking invitation',
-            message: `${req.authUser.fullName} invited you to work at “${event.title}”.`,
+            title: asStandby ? 'New standby invitation' : 'New booking invitation',
+            message: asStandby
+                ? `${req.authUser.fullName} invited you to be on standby for “${event.title}”. Standby is unpaid unless a spot opens and you’re moved in.`
+                : `${req.authUser.fullName} invited you to work at “${event.title}”.`,
             type: 'success',
             link: `/talent/jobs/${event.id}`,
         });
 
         return res.status(201).json({
             success: true,
-            message: 'Booking invitation sent to usher',
+            message: asStandby ? 'Standby invitation sent to usher' : 'Booking invitation sent to usher',
             data: application,
         });
     }
