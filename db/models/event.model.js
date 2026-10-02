@@ -122,9 +122,16 @@ export const Event = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
-    attendanceQrCreatedAt: {
-      type: DataTypes.DATE,
+    // Optional venue pin. An usher within range of it can check in without a staff QR code.
+    venueLatitude: {
+      type: DataTypes.DOUBLE,
       allowNull: true,
+      validate: { min: -90, max: 90 },
+    },
+    venueLongitude: {
+      type: DataTypes.DOUBLE,
+      allowNull: true,
+      validate: { min: -180, max: 180 },
     },
     // prefund: the organization funds usher pay in advance and it is released after the event.
     // pay_after: a trusted organization pays through a post-event settlement checkout.
@@ -136,6 +143,12 @@ export const Event = sequelize.define(
     fundsReleasedAt: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    // Platform fee kept for booked ushers who did not attend, recorded when payments are released.
+    noShowFeeCents: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
     },
   },
   {
@@ -151,7 +164,5 @@ Event.prototype.toJSON = function () {
   if (values.photo && typeof values.photo === 'object') {
     values.photo = values.photo.secure_url || values.photo.url || values.photo;
   }
-  values.attendanceQrGenerated = Boolean(values.attendanceQrCreatedAt);
-  delete values.attendanceQrCreatedAt;
   return values;
 };

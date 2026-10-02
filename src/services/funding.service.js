@@ -2,7 +2,7 @@ import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { sequelize } from '../../db/connection.js';
 import {
-  AbsenceHold, Attendance, Event, EventFunding, EventSettlement, OrganizerCreditEntry, SettlementLine, User,
+  Application, Attendance, Event, EventFunding, EventSettlement, OrganizerCreditEntry, SettlementLine, User,
 } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { decryptCardToken } from './card-token.service.js';
@@ -10,16 +10,21 @@ import { createFundingIntention, inquireOrderTransaction } from './paymob.servic
 import { isPayoutSandboxConfigured } from './paymob-payout.service.js';
 import { resolvePayoutMethod } from './payout-method.service.js';
 import { OrganizerCreditService } from './organizer-credit.service.js';
-import { AbsenceHoldService, createPrefundedSettlement } from './absence-hold.service.js';
+import { createPrefundedSettlement } from './prefund-settlement.js';
+import { FundingRefundService } from './funding-refund.service.js';
+import { checkInWindow, eventStartsAt } from '../utils/eventSchedule.js';
 import {
   CANCELLATION_TIERS,
-  DISPUTE_WINDOW_HOURS,
   FUNDING_DEADLINE_HOURS,
+  RELEASE_AFTER_END_HOURS,
   cancellationRefundPercent,
+  fundingDeadline,
   paymentProtection,
   perUsherGrossCents,
   planCancellation,
   planRelease,
+  planUnfundedSeatDrops,
+  releaseDueAt,
   summarizeFunding,
 } from './funding-policy.js';
 import {
@@ -31,8 +36,8 @@ import {
   serializeSettlement,
 } from './settlement.service.js';
 
-const HOUR_MS = 60 * 60 * 1000;
 const egp = (cents) => cents / 100;
+const MAX_EXTRA_SEATS = 50;
 
 const assertFundable = (event) => {
   if (event.fundingMode !== 'prefund') throw new AppError('This event is paid after it ends, so it does not take advance funding', 409);
@@ -40,9 +45,11 @@ const assertFundable = (event) => {
   if (event.fundsReleasedAt) throw new AppError('This event’s payments have already been released', 409);
 };
 
-const releaseBlockerMessage = (blockers) => blockers.map((blocker) => (blocker.code === 'underfunded'
-  ? `${egp(blocker.shortfallCents)} EGP of usher pay is still unfunded`
-  : `${blocker.talentIds.length} hired usher(s) have no attendance mark`)).join('; ');
+const releaseBlockerMessage = (blockers) => blockers
+  .map((blocker) => `${egp(blocker.shortfallCents)} EGP of usher pay is still unfunded`).join('; ');
+
+// Attendance becomes final when check-in closes; payments can be released from then on.
+export const attendanceIsFinal = (event, now = new Date()) => now > checkInWindow(event).closesAt;
 
 export class FundingService {
   static async fundingsFor(eventId, { transaction } = {}) {
@@ -68,13 +75,17 @@ export class FundingService {
     return paymentProtection(event, await this.summary(event));
   }
 
-  static async startFunding({ eventId, organizerId, cardId = null, useCredit = true, actorId }) {
+  // `extraSeats` pays for ushers not hired yet, so they can still be booked after the funding
+  // deadline.
+  static async startFunding({ eventId, organizerId, cardId = null, useCredit = true, extraSeats = 0, actorId }) {
     if (typeof useCredit !== 'boolean') throw new AppError('useCredit must be a boolean', 400);
+    if (!Number.isSafeInteger(extraSeats) || extraSeats < 0 || extraSeats > MAX_EXTRA_SEATS) {
+      throw new AppError(`extraSeats must be a whole number from 0 to ${MAX_EXTRA_SEATS}`, 400);
+    }
     const event = await Event.findOne({ where: { id: eventId, organizerId } });
     if (!event) throw new AppError('Event not found', 404);
     assertFundable(event);
     await this.reconcileStaleFundings(event.id);
-    await AbsenceHoldService.settleExpired({ organizerId });
     const card = await getCheckoutCard(cardId, organizerId);
     const organizer = await User.findByPk(organizerId);
 
@@ -84,20 +95,23 @@ export class FundingService {
       assertFundable(locked);
       await OrganizerCreditService.lockOrganizer(organizerId, transaction);
       const before = summarizeFunding(locked, await this.fundingsFor(locked.id, { transaction }));
+      const seats = (locked.hiredTalents || []).length + extraSeats;
+      if (seats > locked.requiredCount) throw new AppError(`This event needs ${locked.requiredCount} ushers at most`, 409);
+      const due = Math.max(0, seats * perUsherGrossCents(locked.budget) - before.fundedCents);
 
       const active = before.pendingCheckout;
       if (active) {
         if (active.collectionStatus === 'not_started') throw new AppError('A funding checkout is being prepared. Try again shortly.', 409);
         const live = active.checkoutUrl && active.expiresAt && new Date(active.expiresAt) > new Date();
         if (!live) throw new AppError('Wait for Paymob to confirm the previous funding checkout before starting another payment.', 409);
-        if ((cardId || null) !== (active.selectedCardId || null) || active.amountCents !== before.shortfallCents) {
+        if ((cardId || null) !== (active.selectedCardId || null) || active.amountCents !== due) {
           throw new AppError('A funding checkout is still active. Continue it or retry after it expires.', 409);
         }
         return { event: locked, checkout: active, reused: true, fullyFundedNow: false };
       }
-      if (before.shortfallCents <= 0) throw new AppError('This event is already fully funded', 409);
+      if (due <= 0) throw new AppError('This event is already fully funded', 409);
 
-      let remaining = before.shortfallCents;
+      let remaining = due;
       if (useCredit) {
         const applied = Math.min(await OrganizerCreditService.balance(organizerId, { transaction }), remaining);
         if (applied > 0) {
@@ -148,6 +162,8 @@ export class FundingService {
   // Records a Paymob transaction for a funding checkout. A payment that arrives after the event
   // stopped needing it (cancelled, released, deleted, or switched to pay-after) becomes credit.
   static async applyFundingTransaction(funding, obj) {
+    // Refunds the platform sent back to the card are already recorded.
+    if (await FundingRefundService.isOwnRefundCallback(funding, obj)) return { ignored: true };
     if (Number(obj.amount_cents) !== funding.amountCents || obj.currency !== funding.currency) {
       throw new AppError('Paymob callback amount or currency does not match the funding', 409);
     }
@@ -268,12 +284,11 @@ export class FundingService {
     });
   }
 
-  // Pays present ushers from the held funds, holds absent ushers' pay for the dispute window, and
-  // credits any surplus. `unmarkedAs` lets an admin release an event the organization never marked.
-  static async releaseEventFunds({ eventId, organizerId = null, actorId = null, unmarkedAs = null }) {
-    if (unmarkedAs !== null && !['present', 'absent'].includes(unmarkedAs)) {
-      throw new AppError('unmarkedAs must be present or absent', 400);
-    }
+  // Pays ushers who checked in from the held funds once attendance is final. The platform fee is
+  // kept for every booked usher; no-show wages and unused funding go back to the card that paid
+  // (or to credit for the part paid from credit). Returns null when an automatic release has to
+  // wait for missing funding.
+  static async releaseEventFunds({ eventId, organizerId = null, actorId = null, automatic = false }) {
     const event = await Event.findOne({ where: { id: eventId, ...(organizerId ? { organizerId } : {}) } });
     if (!event) throw new AppError('Event not found', 404);
     if (event.fundingMode !== 'prefund') throw new AppError('This event is paid through a post-event checkout', 409);
@@ -283,6 +298,7 @@ export class FundingService {
       const locked = await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
       if (locked.status !== 'completed') throw new AppError('Complete the event before releasing its payments', 409);
       if (locked.fundsReleasedAt) throw new AppError('This event’s payments have already been released', 409);
+      if (!attendanceIsFinal(locked)) throw new AppError('Payments can be released once check-in closes, 2 hours after the event ends', 409);
       const hired = [...new Set(locked.hiredTalents || [])];
       const [summary, attendance] = await Promise.all([
         this.summary(locked, { transaction }),
@@ -293,9 +309,11 @@ export class FundingService {
         attendanceByTalent: new Map(attendance.map((record) => [record.talentId, record])),
         perUsherCents: perUsherGrossCents(locked.budget),
         fundedCents: summary.fundedCents,
-        unmarkedAs,
       });
-      if (plan.blockers.length) throw new AppError(`Payments cannot be released yet: ${releaseBlockerMessage(plan.blockers)}`, 409);
+      if (plan.blockers.length) {
+        if (automatic) return null;
+        throw new AppError(`Payments cannot be released yet: ${releaseBlockerMessage(plan.blockers)}`, 409);
+      }
 
       let settlement = null;
       if (plan.payable.length) {
@@ -314,56 +332,90 @@ export class FundingService {
           event: locked, specialReference: `OO-REL-${locked.id}`, lineDrafts: drafts, transaction,
         });
       }
-      if (unmarkedAs) {
-        for (const talentId of plan.unmarked) {
-          await Attendance.findOrCreate({
-            where: { eventId: locked.id, talentId },
-            defaults: { status: unmarkedAs, checkInMethod: 'admin' },
-            transaction,
-          });
-        }
-      }
-      const releaseAfter = new Date(Date.now() + DISPUTE_WINDOW_HOURS * HOUR_MS);
-      const holds = await AbsenceHoldService.createForRelease({ event: locked, absent: plan.absent, transaction, releaseAfter });
-      if (plan.surplusCents > 0) {
-        await OrganizerCreditService.addEntry({
-          organizerId: locked.organizerId, amountCents: plan.surplusCents, type: 'event_surplus',
-          reference: `surplus:${locked.id}`, eventId: locked.id, createdBy: actorId,
-        }, { transaction });
-      }
+      const returns = {
+        noShow: await FundingRefundService.returnFunds({ event: locked, amountCents: plan.noShowWageCents, reason: 'no_show', transaction }),
+        surplus: await FundingRefundService.returnFunds({ event: locked, amountCents: plan.surplusCents, reason: 'surplus', transaction }),
+      };
+      locked.noShowFeeCents = plan.noShowFeeCents;
       locked.fundsReleasedAt = new Date();
       await locked.save({ transaction });
-      return { event: locked, settlement, holds, plan, releaseAfter };
+      return { event: locked, settlement, plan, returns, actorId };
     });
+    if (!released) return null;
 
     if (released.settlement) await processAutomaticPayouts(released.settlement);
+    await FundingRefundService.processPending({ eventId: released.event.id });
     await this.notifyRelease(released);
     return released;
   }
 
-  static async notifyRelease({ event, settlement, holds, plan, releaseAfter }) {
+  static async notifyRelease({ event, settlement, plan }) {
     const lines = settlement ? await SettlementLine.findAll({ where: { settlementId: settlement.id } }) : [];
-    await Promise.all(lines.filter((line) => line.payoutStatus === 'awaiting_method').map((line) => notifySafely({
+    await Promise.all(lines.map((line) => notifySafely({
       userId: line.talentId,
-      title: 'Add a payout account to receive your pay',
-      message: `Your ${egp(line.usherAmountCents)} EGP for “${event.title}” is ready. Add a mobile wallet or bank account in your profile and it will be sent automatically.`,
-      type: 'warning',
-      link: '/talent/profile',
+      title: line.payoutStatus === 'awaiting_method' ? 'Add a payout account to receive your pay' : 'Your pay was released',
+      message: line.payoutStatus === 'awaiting_method'
+        ? `Your ${egp(line.usherAmountCents)} EGP for “${event.title}” is ready. Add a mobile wallet or bank account in your profile and it will be sent automatically.`
+        : `Your ${egp(line.usherAmountCents)} EGP for “${event.title}” is on its way to your payout account.`,
+      type: line.payoutStatus === 'awaiting_method' ? 'warning' : 'success',
+      link: line.payoutStatus === 'awaiting_method' ? '/talent/profile' : '/talent/events',
     })));
-    await Promise.all(holds.map((hold) => notifySafely({
-      userId: hold.talentId,
-      title: 'You were marked absent',
-      message: `The organization marked you absent at “${event.title}”, so your pay is on hold. If you attended, dispute it before ${releaseAfter.toUTCString()}.`,
+    const returned = plan.returnCents;
+    await notifySafely({
+      userId: event.organizerId,
+      title: 'Event payments released',
+      message: `Payments for “${event.title}” were released to ${plan.payable.length} usher(s).${plan.noShows.length ? ` ${plan.noShows.length} booked usher(s) did not check in; their wages were returned and the booking fee was kept.` : ''}${returned ? ` ${egp(returned)} EGP is being returned to the card that paid (any part paid from credit returns to credit).` : ''}`,
+      type: 'success',
+      link: `/provider/events/${event.id}`,
+    });
+  }
+
+  // Once the funding deadline passes, bookings the funding does not cover are cancelled (latest
+  // hires first) so no usher works without secured pay. It stops at the start of the event.
+  static async enforceFundingDeadline(event, now = new Date()) {
+    if (event.fundingMode !== 'prefund' || event.fundsReleasedAt || !['open', 'confirmed'].includes(event.status)) return [];
+    const deadline = fundingDeadline(event);
+    const startsAt = eventStartsAt(event);
+    if (!deadline || now < deadline || (startsAt && now >= startsAt)) return [];
+    await this.reconcileStaleFundings(event.id);
+    const outcome = await sequelize.transaction(async (transaction) => {
+      const locked = await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!locked || locked.fundsReleasedAt || !['open', 'confirmed'].includes(locked.status)) return null;
+      const fundings = await this.fundingsFor(locked.id, { transaction });
+      // A checkout the organization is paying right now gets the chance to finish.
+      if (fundings.some((funding) => funding.source === 'paymob' && ['not_started', 'pending'].includes(funding.collectionStatus))) return null;
+      const summary = summarizeFunding(locked, fundings, now);
+      if (summary.shortfallCents <= 0) return null;
+      const dropped = planUnfundedSeatDrops({
+        hiredTalentIds: locked.hiredTalents,
+        perUsherCents: perUsherGrossCents(locked.budget),
+        fundedCents: summary.fundedCents,
+      });
+      if (!dropped.length) return null;
+      locked.hiredTalents = (locked.hiredTalents || []).filter((talentId) => !dropped.includes(talentId));
+      await locked.save({ transaction });
+      await Application.update(
+        { status: 'rejected' },
+        { where: { eventId: locked.id, talentId: { [Op.in]: dropped }, status: 'accepted' }, transaction },
+      );
+      return { event: locked, dropped };
+    });
+    if (!outcome) return [];
+    await Promise.all(outcome.dropped.map((userId) => notifySafely({
+      userId,
+      title: 'Booking cancelled: pay not secured',
+      message: `The organization did not pay for your spot at “${outcome.event.title}” in time, so the booking was cancelled. You do not need to attend.`,
       type: 'danger',
       link: '/talent/events',
     })));
     await notifySafely({
-      userId: event.organizerId,
-      title: 'Event payments released',
-      message: `Payments for “${event.title}” were released.${plan.surplusCents ? ` ${egp(plan.surplusCents)} EGP of unused funding was added to your credit.` : ''}${holds.length ? ` Pay for ${holds.length} absent usher(s) is held for ${DISPUTE_WINDOW_HOURS} hours in case they dispute.` : ''}`,
-      type: 'success',
-      link: `/provider/events/${event.id}`,
+      userId: outcome.event.organizerId,
+      title: 'Unpaid bookings cancelled',
+      message: `${outcome.dropped.length} booking(s) for “${outcome.event.title}” were cancelled because their pay was not funded ${FUNDING_DEADLINE_HOURS} hours before the start.`,
+      type: 'warning',
+      link: `/provider/events/${outcome.event.id}`,
     });
+    return outcome.dropped;
   }
 
   // Runs inside EventService.changeStatus when an event is cancelled. The caller saves the event
@@ -396,13 +448,8 @@ export class FundingService {
         });
       }
     }
-    if (plan.creditCents > 0) {
-      await OrganizerCreditService.addEntry({
-        organizerId: event.organizerId, amountCents: plan.creditCents, type: 'cancellation_refund',
-        reference: `cancellation:${event.id}`, eventId: event.id,
-        note: `${refundPercent}% refund for a cancellation`,
-      }, { transaction });
-    }
+    // The refundable share goes back to the card that paid it.
+    await FundingRefundService.returnFunds({ event, amountCents: plan.creditCents, reason: 'cancellation', transaction });
     event.fundsReleasedAt = new Date();
     return { settlement, plan, refundPercent };
   }
@@ -410,6 +457,7 @@ export class FundingService {
   static async afterCancellation(event, result) {
     if (!result) return;
     if (result.settlement) await processAutomaticPayouts(result.settlement);
+    await FundingRefundService.processPending({ eventId: event.id });
     await Promise.all(result.plan.compensation.map((line) => notifySafely({
       userId: line.talentId,
       title: 'Cancellation compensation',
@@ -420,7 +468,7 @@ export class FundingService {
     await notifySafely({
       userId: event.organizerId,
       title: 'Cancelled event funding settled',
-      message: `${egp(result.plan.creditCents)} EGP of the funding for “${event.title}” was added to your credit (${result.refundPercent}% refund).${result.plan.compensationCents ? ` ${egp(result.plan.compensationCents)} EGP compensates the hired ushers.` : ''}`,
+      message: `${egp(result.plan.creditCents)} EGP of the funding for “${event.title}” is being returned to the card that paid (${result.refundPercent}% refund).${result.plan.compensationCents ? ` ${egp(result.plan.compensationCents)} EGP compensates the hired ushers.` : ''}`,
       type: 'info',
       link: '/provider/payments',
     });
@@ -451,26 +499,21 @@ export class FundingService {
 
   static async publicSummary(event, { includeRelease = true } = {}) {
     await this.reconcileStaleFundings(event.id);
-    await AbsenceHoldService.settleExpired({ eventId: event.id });
     const fundings = await this.fundingsFor(event.id);
     const summary = summarizeFunding(event, fundings);
-    const [tier, creditBalanceCents, settlements, holds] = await Promise.all([
+    const [tier, creditBalanceCents, settlements, refunds] = await Promise.all([
       OrganizerCreditService.evaluateOrganizerTier(event.organizerId),
       OrganizerCreditService.balance(event.organizerId),
       EventSettlement.findAll({ where: { eventId: event.id, fundingSource: 'prefund' }, order: [['createdAt', 'ASC']] }),
-      AbsenceHoldService.listWithDetails({ eventId: event.id }),
+      FundingRefundService.listForEvent(event.id),
     ]);
     const perUsherCents = perUsherGrossCents(event.budget);
     let releasePreview = null;
     if (includeRelease && event.fundingMode === 'prefund' && !event.fundsReleasedAt && event.status !== 'cancelled') {
       const hired = [...new Set(event.hiredTalents || [])];
       const attendance = hired.length ? await Attendance.findAll({ where: { eventId: event.id, talentId: { [Op.in]: hired } } }) : [];
-      const plan = planRelease({
-        hiredTalentIds: hired,
-        attendanceByTalent: new Map(attendance.map((record) => [record.talentId, record])),
-        perUsherCents,
-        fundedCents: summary.fundedCents,
-      });
+      const attendanceByTalent = new Map(attendance.map((record) => [record.talentId, record]));
+      const plan = planRelease({ hiredTalentIds: hired, attendanceByTalent, perUsherCents, fundedCents: summary.fundedCents });
       const ushers = hired.length ? await User.findAll({ where: { id: { [Op.in]: hired } }, paranoid: false, attributes: ['id', 'fullName', 'portfolioPicture', 'paymentMethods'] }) : [];
       const usersById = new Map(ushers.map((user) => [user.id, user]));
       const describe = (talentId) => {
@@ -478,15 +521,26 @@ export class FundingService {
         const payout = resolvePayoutMethod(user?.paymentMethods || [], user?.fullName || '');
         return { talentId, fullName: user?.fullName || 'Usher', photo: user?.portfolioPicture?.secure_url || '', hasPayoutAccount: payout.type !== 'cash' };
       };
+      const final = attendanceIsFinal(event);
       releasePreview = {
-        canRelease: event.status === 'completed' && plan.blockers.length === 0,
+        attendanceFinal: final,
+        checkInClosesAt: checkInWindow(event).closesAt,
+        releaseDueAt: releaseDueAt(event),
+        releaseAfterEndHours: RELEASE_AFTER_END_HOURS,
+        canRelease: event.status === 'completed' && final && plan.blockers.length === 0,
         eventCompleted: event.status === 'completed',
-        blockers: plan.blockers.map((blocker) => ({ ...blocker, ...(blocker.shortfallCents ? { shortfall: egp(blocker.shortfallCents) } : {}) })),
+        blockers: plan.blockers.map((blocker) => ({ ...blocker, shortfall: egp(blocker.shortfallCents) })),
         payable: plan.payable.map((line) => ({ ...describe(line.talentId), attendanceStatus: line.attendanceStatus, usherAmount: egp(line.usherAmountCents), platformFee: egp(line.platformFeeCents), grossAmount: egp(line.grossAmountCents) })),
-        absent: plan.absent.map((line) => ({ ...describe(line.talentId), amount: egp(line.amountCents) })),
-        unmarked: plan.unmarked.map(describe),
+        // Before check-in closes these ushers simply have not checked in yet.
+        notCheckedIn: plan.noShows.map((line) => ({
+          ...describe(line.talentId),
+          status: attendanceByTalent.get(line.talentId)?.status || null,
+          returnedWage: egp(line.wageCents),
+          keptFee: egp(line.feeCents),
+        })),
+        noShowFee: egp(plan.noShowFeeCents),
+        returnAmount: egp(plan.returnCents),
         surplus: egp(plan.surplusCents),
-        disputeWindowHours: DISPUTE_WINDOW_HOURS,
       };
     }
     const pendingCheckout = summary.pendingCheckout;
@@ -496,6 +550,7 @@ export class FundingService {
       eventStatus: event.status,
       tier,
       hiredCount: (event.hiredTalents || []).length,
+      requiredCount: event.requiredCount,
       perUsherAmount: egp(perUsherCents),
       requiredAmount: egp(summary.requiredCents),
       fundedAmount: egp(summary.fundedCents),
@@ -507,6 +562,8 @@ export class FundingService {
       overdue: summary.overdue,
       released: summary.released,
       fundsReleasedAt: event.fundsReleasedAt,
+      releaseDueAt: releaseDueAt(event),
+      noShowFee: egp(event.noShowFeeCents || 0),
       protection: paymentProtection(event, summary),
       creditBalance: egp(creditBalanceCents),
       creditToApply: egp(Math.min(Math.max(creditBalanceCents, 0), summary.shortfallCents)),
@@ -516,13 +573,13 @@ export class FundingService {
           && Boolean(pendingCheckout.expiresAt) && new Date(pendingCheckout.expiresAt) > new Date(),
       } : null,
       fundings: fundings.map((funding) => funding.toJSON()),
+      refunds: refunds.map((refund) => refund.toJSON()),
       cancellationPolicy: {
         tiers: CANCELLATION_TIERS.map((tier) => ({ ...tier, minHoursBeforeStart: Number.isFinite(tier.minHoursBeforeStart) ? tier.minHoursBeforeStart : null })),
         currentRefundPercent: event.status === 'cancelled' ? null : cancellationRefundPercent(event),
       },
       releasePreview,
       settlements: await Promise.all(settlements.map(serializeSettlement)),
-      holds,
       payoutSandboxConfigured: isPayoutSandboxConfigured(),
     };
   }
@@ -561,9 +618,5 @@ export class FundingService {
     if (!event || event.fundsReleasedAt) return false;
     const held = await EventFunding.count({ where: { eventId, collectionStatus: 'paid' }, transaction });
     return held > 0;
-  }
-
-  static async activeHoldsCount(organizerId) {
-    return AbsenceHold.count({ where: { organizerId, status: { [Op.in]: ['held', 'disputed'] } } });
   }
 }

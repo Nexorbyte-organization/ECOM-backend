@@ -5,6 +5,7 @@ import { Op } from 'sequelize';
 process.env.PG_URI = 'postgres://test:test@localhost:5432/dashboard_tests';
 const { Event, Application } = await import('../db/index.js');
 const { OrganizerController } = await import('../src/controllers/organizer.controller.js');
+const { EventAutomationService } = await import('../src/services/event-automation.service.js');
 
 test('organization dashboard returns totals and pending applications from owned events', async (t) => {
   const organizerId = 'organizer-1';
@@ -14,6 +15,7 @@ test('organization dashboard returns totals and pending applications from owned 
     { id: 'event-3', status: 'completed', hiredTalents: [] },
   ];
   const eventQueries = [];
+  t.mock.method(EventAutomationService, 'sweepQuietly', async () => undefined);
   t.mock.method(Event, 'findAll', async (options) => {
     eventQueries.push(options);
     if (options.attributes) return events;

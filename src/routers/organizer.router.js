@@ -48,9 +48,10 @@ organizerRouter.post('/events/:id/map/pins', ...ownerAuth, completeProfile, Erro
 organizerRouter.patch('/events/:id/map/pins/:pinId', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(EventMapController.updatePin));
 organizerRouter.delete('/events/:id/map/pins/:pinId', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(EventMapController.deletePin));
 
-// One attendance QR per event. It can only be created while applications are open.
-organizerRouter.post('/events/:id/attendance-qr', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(OrganizerController.generateAttendanceQr));
-organizerRouter.get('/events/:id/attendance-qr', ...ownerAuth, ErrorHandler.asyncHandler(OrganizerController.getAttendanceQr));
+// Check-in points: each staff phone shows a rotating QR and 6-digit code while it shares its location.
+organizerRouter.get('/events/:id/check-in-points', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.listCheckInPoints));
+organizerRouter.put('/events/:id/check-in-points/me', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(AttendanceValidator.openPoint), ErrorHandler.asyncHandler(OrganizerController.openCheckInPoint));
+organizerRouter.delete('/events/:id/check-in-points/me', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.closeCheckInPoint));
 
 // Update event
 organizerRouter.put('/events/:id', ...ownerAuth, completeProfile, ValidationMiddleware.isValid(EventValidator.update), ErrorHandler.asyncHandler(OrganizerController.updateEvent));
@@ -73,7 +74,7 @@ organizerRouter.get('/events/:id/applicants', ...workspaceAuth, ErrorHandler.asy
 // US-205: Accept / reject applicant (with schema validation)
 organizerRouter.patch('/applications/:applicationId/status', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.updateStatus), ErrorHandler.asyncHandler(OrganizerController.updateApplicationStatus));
 
-// US-207: Mark attendance (with schema validation)
+// US-207: Staff check-in for an usher whose phone cannot check in (present or late only)
 organizerRouter.get('/events/:id/attendance', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.getEventAttendance));
 organizerRouter.post('/events/:id/attendance', ...workspaceAuth, completeProfile, ValidationMiddleware.isValid(AttendanceValidator.mark), ErrorHandler.asyncHandler(OrganizerController.markAttendance));
 
@@ -111,8 +112,6 @@ organizerRouter.post('/events/:id/funding', ...ownerAuth, completeProfile, Error
 organizerRouter.patch('/events/:id/funding-mode', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.setFundingMode));
 organizerRouter.post('/events/:id/release-payments', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.releaseEventFunds));
 organizerRouter.get('/credit', ...ownerAuth, ErrorHandler.asyncHandler(FundingController.getCredit));
-organizerRouter.post('/credit/withdrawals', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(FundingController.requestWithdrawal));
-organizerRouter.delete('/credit/withdrawals/:withdrawalId', ...ownerAuth, ErrorHandler.asyncHandler(FundingController.cancelWithdrawal));
 organizerRouter.get('/payment-cards', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.listOrganizerCards));
 organizerRouter.post('/payment-cards/enrollments', ...ownerAuth, completeProfile, ErrorHandler.asyncHandler(PaymentController.startCardEnrollment));
 organizerRouter.get('/payment-cards/enrollments/:enrollmentId', ...ownerAuth, ErrorHandler.asyncHandler(PaymentController.getCardEnrollment));

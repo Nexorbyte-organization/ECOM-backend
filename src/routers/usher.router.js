@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
-import { FundingController } from '../controllers/funding.controller.js';
 import { UsherController } from '../controllers/usher.controller.js';
 import { EventMapController } from '../controllers/event-map.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
@@ -52,11 +51,9 @@ usherRouter.get('/events/:id', ...auth, ErrorHandler.asyncHandler(UsherControlle
 usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapController.getUsherMap));
 
 // Pay held because the usher was marked absent at a prefunded event, and disputes of that mark.
-usherRouter.get('/payments/holds', ...auth, ErrorHandler.asyncHandler(FundingController.listMyHolds));
-usherRouter.post('/payments/holds/:holdId/dispute', ...auth, ErrorHandler.asyncHandler(FundingController.disputeHold));
 
-// Event-day check-in from an organizer-displayed QR code.
-usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));
+// Event-day check-in: scan the staff QR, type its 6-digit code, or "I'm here" by location.
+usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkIn));
 
 // US-211: Accept or decline a direct booking invitation
 usherRouter.patch('/applications/:applicationId/respond', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.respond), ErrorHandler.asyncHandler(UsherController.respondToBookingInvitation));

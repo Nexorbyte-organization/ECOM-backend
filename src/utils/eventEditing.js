@@ -6,13 +6,14 @@ export const EVENT_EDITABLE_FIELDS = [
     'startTime', 'endTime', 'location', 'requiredCount',
     'gatheringLocation', 'genderPreference', 'specifyGenders',
     'malesCount', 'femalesCount', 'budget', 'dressCode', 'notes', 'whatsappGroupLink',
+    'venueLatitude', 'venueLongitude',
 ];
 
 // Once applications close, staffing and pay are fixed; ushers can still be told about
 // practical changes to the schedule, venue, and instructions.
 const CONFIRMED_EDITABLE_FIELDS = [
     'title', 'eventDate', 'startTime', 'endTime', 'location', 'gatheringLocation',
-    'dressCode', 'notes', 'whatsappGroupLink',
+    'dressCode', 'notes', 'whatsappGroupLink', 'venueLatitude', 'venueLongitude',
 ];
 // After the event starts only information for the people on site can change.
 const STARTED_EDITABLE_FIELDS = ['notes', 'whatsappGroupLink'];
@@ -23,10 +24,11 @@ export const EVENT_FIELD_LABELS = {
     gatheringLocation: 'meeting point', genderPreference: 'gender preference', specifyGenders: 'gender split',
     malesCount: 'male count', femalesCount: 'female count', budget: 'pay', dressCode: 'dress code',
     notes: 'notes', whatsappGroupLink: 'WhatsApp group link',
+    venueLatitude: 'venue pin', venueLongitude: 'venue pin',
 };
 
 const DATE_FIELDS = new Set(['eventDate', 'applicationDeadline']);
-const NUMBER_FIELDS = new Set(['requiredCount', 'malesCount', 'femalesCount', 'budget']);
+const NUMBER_FIELDS = new Set(['requiredCount', 'malesCount', 'femalesCount', 'budget', 'venueLatitude', 'venueLongitude']);
 
 const comparable = (field, value) => {
     if (value === undefined || value === null || value === '') return null;

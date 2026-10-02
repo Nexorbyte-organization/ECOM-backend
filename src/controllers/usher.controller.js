@@ -20,9 +20,10 @@ import { eventForTalent } from '../utils/eventVisibility.js';
 import { maskPaymentMethods, publicTalent, withoutSecrets } from '../utils/publicTalent.js';
 import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
-import { attendanceQrMatchesEvent, parseAttendanceQrToken } from '../utils/attendanceQr.js';
-import { checkInStatusAt, hasEventStarted } from '../utils/eventSchedule.js';
+import { hasEventStarted } from '../utils/eventSchedule.js';
 import { FundingService } from '../services/funding.service.js';
+import { AttendanceService } from '../services/attendance.service.js';
+import { EventAutomationService } from '../services/event-automation.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
@@ -35,10 +36,6 @@ async function resumeHeldPayouts(talentId) {
         // The line stays waiting and is retried the next time the payout account changes.
     }
 }
-
-// FR-VER-01: Auto-verify talent after hitting performance thresholds
-const AUTO_VERIFY_MIN_EVENTS = 10;
-const AUTO_VERIFY_MIN_RATING = 4.0;
 
 async function maybeAutoAcceptHighRatedApplication({ application, event, talent }) {
     return sequelize.transaction(async (transaction) => {
@@ -71,32 +68,6 @@ async function maybeAutoAcceptHighRatedApplication({ application, event, talent 
             autoAccepted: result.accepted,
         };
     });
-}
-
-async function checkAndAutoVerify(userId) {
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'usher') return;
-
-    const acceptedApps = await Application.findAll({ where: { talentId: userId, status: 'accepted' } });
-    const eventIds = acceptedApps.map(a => a.eventId);
-
-    const presentCount = eventIds.length > 0
-        ? await Attendance.count({
-            where: { talentId: userId, eventId: { [Op.in]: eventIds }, status: { [Op.in]: ['present', 'late'] } }
-          })
-        : 0;
-
-    const attendanceCount = eventIds.length > 0
-        ? await Attendance.count({ where: { talentId: userId, eventId: { [Op.in]: eventIds } } })
-        : 0;
-
-    user.completedEventsCount = presentCount;
-    user.reliabilityScore = attendanceCount > 0 ? Math.round((presentCount / attendanceCount) * 100) : 100;
-
-    if (presentCount >= AUTO_VERIFY_MIN_EVENTS && (user.rate || 0) >= AUTO_VERIFY_MIN_RATING) {
-        user.isVerified = true;
-    }
-    await user.save();
 }
 
 export class UsherController {
@@ -295,6 +266,7 @@ export class UsherController {
     }
 
     static async getEventById(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const event = await Event.findByPk(req.params.id);
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
@@ -311,78 +283,17 @@ export class UsherController {
         return res.status(200).json({ success: true, data });
     }
 
-    static async checkInWithAttendanceQr(req, res, next) {
-        const { token } = req.body;
-        const parsedToken = parseAttendanceQrToken(token);
-        if (!parsedToken) return next(new AppError('Invalid attendance QR code', 400));
-
-        const talentId = req.authUser.id;
-        const { attendance, event, previousStatus } = await sequelize.transaction(async (transaction) => {
-            const event = await Event.findByPk(parsedToken.eventId, { transaction });
-            if (!event || !attendanceQrMatchesEvent(token, event)) {
-                throw new AppError('Invalid attendance QR code', 400);
-            }
-            if (event.status === 'cancelled' || event.status === 'completed') {
-                throw new AppError('Check-in is closed for this event', 409);
-            }
-            if (!(event.hiredTalents || []).includes(talentId)) {
-                throw new AppError('You are not hired for this event', 403);
-            }
-            // The QR only works on the event day, so a shared screenshot cannot be used remotely days early.
-            const arrivalStatus = checkInStatusAt(event);
-            if (arrivalStatus === 'early') {
-                throw new AppError('Check-in opens 2 hours before the event starts', 409);
-            }
-            if (arrivalStatus === 'closed') {
-                throw new AppError('Check-in is closed for this event', 409);
-            }
-
-            const talent = await User.findByPk(talentId, {
-                transaction,
-                lock: transaction.LOCK.UPDATE,
-            });
-            const existingAttendance = await Attendance.findOne({
-                where: { eventId: event.id, talentId },
-                transaction,
-                lock: transaction.LOCK.UPDATE,
-            });
-            const previousStatus = existingAttendance?.status || null;
-            const attendance = existingAttendance || await Attendance.create({
-                eventId: event.id,
-                talentId,
-                status: arrivalStatus,
-                checkInTime: new Date(),
-                checkInMethod: 'qr',
-            }, { transaction });
-
-            // A repeated scan keeps the first arrival; an organizer's absent mark is replaced by the scan.
-            if (existingAttendance && !['present', 'late'].includes(previousStatus)) {
-                attendance.status = arrivalStatus;
-                attendance.checkInTime ||= new Date();
-                attendance.checkInMethod = 'qr';
-                await attendance.save({ transaction });
-            } else if (existingAttendance && attendance.checkInMethod !== 'qr') {
-                // A manual present mark becomes QR-verified once the usher scans.
-                attendance.checkInMethod = 'qr';
-                await attendance.save({ transaction });
-            }
-
-            const wasGood = previousStatus === 'present' || previousStatus === 'late';
-            if (talent && !wasGood) {
-                talent.consecutiveGoodEvents = (talent.consecutiveGoodEvents || 0) + 1;
-                if (talent.consecutiveGoodEvents >= 5) {
-                    talent.lateExcuseCount = 0;
-                    talent.consecutiveGoodEvents = 0;
-                }
-                await talent.save({ transaction });
-            }
-
-            return { attendance, event, previousStatus };
+    // Scan the staff QR, type its 6-digit code, or "I'm here" by location. Every method needs the
+    // usher's location near a staff phone (or the venue pin), so it cannot be done remotely.
+    static async checkIn(req, res) {
+        const { attendance, event, alreadyCheckedIn } = await AttendanceService.selfCheckIn({
+            talentId: req.authUser.id,
+            method: req.body.method || 'qr',
+            token: req.body.token,
+            code: req.body.code,
+            eventId: req.body.eventId,
+            location: req.body.location,
         });
-
-        await checkAndAutoVerify(talentId);
-        const alreadyCheckedIn = previousStatus === 'present' || previousStatus === 'late';
-
         return res.status(200).json({
             success: true,
             message: alreadyCheckedIn ? 'You are already checked in'
@@ -471,6 +382,7 @@ export class UsherController {
 
     // US-105: Track my applications & events (with ApiFeature pagination)
     static async getMyApplications(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
         const { filter } = req.query;
         const { offset, limit: size } = new ApiFeature(req.query).pagination().build();
@@ -511,6 +423,7 @@ export class UsherController {
 
     // US-106: Get event history on profile page
     static async getMyEventHistory(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
 
         const applications = await Application.findAll({
@@ -825,6 +738,7 @@ export class UsherController {
 
     // ─── US-100-EXT: Usher Dashboard Stats ──────────────────────────────────────
     static async getDashboard(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
 
         const [
@@ -1124,4 +1038,3 @@ export class UsherController {
 }
 
 // Export helper for use by organizer controller after marking attendance/reviews
-export { checkAndAutoVerify };

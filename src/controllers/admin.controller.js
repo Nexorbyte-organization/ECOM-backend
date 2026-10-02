@@ -1,6 +1,6 @@
 import { Op } from 'sequelize';
 import { sequelize } from '../../db/connection.js';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, AbsenceHold, CreditWithdrawal, SettlementLine, OrganizationFavorite } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, FundingRefund, SettlementLine, OrganizationFavorite } from '../../db/index.js';
 import { OrganizerCreditService } from '../services/organizer-credit.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
@@ -417,22 +417,16 @@ export class AdminController {
     // Deleting an account must not strand money the platform holds for it or owes it.
     static async unsettledMoneyFor(user) {
         if (user.role === 'organizer') {
-            const [balance, pendingWithdrawals, activeHolds] = await Promise.all([
+            const [balance, pendingRefunds] = await Promise.all([
                 OrganizerCreditService.balance(user.id),
-                CreditWithdrawal.count({ where: { organizerId: user.id, status: 'pending' } }),
-                AbsenceHold.count({ where: { organizerId: user.id, status: { [Op.in]: ['held', 'disputed'] } } }),
+                FundingRefund.count({ where: { organizerId: user.id, status: { [Op.in]: ['pending', 'processing'] } } }),
             ]);
             if (balance !== 0) return `This organization has ${balance / 100} EGP of credit. Settle it before deleting the account.`;
-            if (pendingWithdrawals) return 'This organization has a credit withdrawal waiting for review.';
-            if (activeHolds) return 'This organization has usher pay held for an attendance dispute window.';
+            if (pendingRefunds) return 'This organization has a card refund still being processed.';
         }
         if (user.role === 'usher') {
-            const [waiting, activeHolds] = await Promise.all([
-                SettlementLine.count({ where: { talentId: user.id, payoutStatus: { [Op.in]: ['awaiting_method', 'queued', 'processing'] } } }),
-                AbsenceHold.count({ where: { talentId: user.id, status: { [Op.in]: ['held', 'disputed'] } } }),
-            ]);
+            const waiting = await SettlementLine.count({ where: { talentId: user.id, payoutStatus: { [Op.in]: ['awaiting_method', 'queued', 'processing'] } } });
             if (waiting) return 'This usher still has event pay waiting to be sent.';
-            if (activeHolds) return 'This usher has held pay in an attendance dispute window.';
         }
         return null;
     }
