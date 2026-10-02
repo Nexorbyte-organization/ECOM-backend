@@ -24,7 +24,7 @@
     },
     {
       "path": "/internal/cron/event-reminders",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 7 * * *"
     }
   ]
 }

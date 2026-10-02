@@ -1,0 +1,38 @@
+name: Event reminders
+# Vercel Hobby only allows daily crons, so this triggers the reminder sweep every 15 minutes.
+# The daily Vercel cron in vercel.json stays as a fallback; the sweep is idempotent.
+# Configure per environment: <ENV>_API_URL (e.g. https://api.example.com) and <ENV>_CRON_SECRET
+# (the deployment's CRON_SECRET). Environments without both secrets are skipped.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions: {}
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger reminder sweeps
+        env:
+          STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+          STAGING_CRON_SECRET: ${{ secrets.STAGING_CRON_SECRET }}
+          PRODUCTION_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+          PRODUCTION_CRON_SECRET: ${{ secrets.PRODUCTION_CRON_SECRET }}
+        run: |
+          failed=0
+          for target in STAGING PRODUCTION; do
+            url_var="${target}_API_URL"; secret_var="${target}_CRON_SECRET"
+            url="${!url_var}"; secret="${!secret_var}"
+            if [ -z "$url" ] || [ -z "$secret" ]; then
+              echo "$target: not configured, skipping"
+              continue
+            fi
+            # Logs are public: print only the status code, never the response body.
+            status=$(curl --silent --show-error --max-time 60 --output /dev/null --write-out '%{http_code}' \
+              -H "Authorization: Bearer $secret" \
+              "${url%/}/internal/cron/event-reminders") || status=000
+            echo "$target: HTTP $status"
+            [ "$status" = 200 ] || failed=1
+          done
+          exit $failed
