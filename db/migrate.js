@@ -80,6 +80,20 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLatitude" DOUBLE PRECISION`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLongitude" DOUBLE PRECISION`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "noShowFeeCents" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "standbyCount" INTEGER NOT NULL DEFAULT 0`,
+    ]);
+  }
+
+  const [applicationTables] = await sequelize.query(`
+    SELECT to_regclass('public.applications') IS NOT NULL AS "hasApplications"
+  `);
+  if (applicationTables[0]?.hasApplications) {
+    await runStatements([
+      ...['standby', 'withdrawn'].map((value) => `ALTER TYPE "enum_applications_status" ADD VALUE IF NOT EXISTS '${value}'`),
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyOk" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyInvite" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbySince" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "promotedAt" TIMESTAMP WITH TIME ZONE`,
     ]);
   }
 

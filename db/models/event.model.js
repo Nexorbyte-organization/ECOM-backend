@@ -67,6 +67,12 @@ export const Event = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: false,
     },
+    // Unpaid on-call ushers who fill hired spots that open up before the event starts.
+    standbyCount: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     genderPreference: {
       type: DataTypes.ENUM(...Object.values(genderPreference)),
       defaultValue: 'any',

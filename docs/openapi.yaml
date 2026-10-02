@@ -563,6 +563,8 @@ paths:
         Submits an application to an open event. Business rules enforced:
         - **BR-01**: Cannot apply twice to the same event.
         - **BR-02**: Application deadline must not have passed.
+        - With `standbyOk`, the usher agrees to unpaid standby: the organization can put them on
+          the standby list, and accepting them into a full event (or auto-accept) does so.
       operationId: applyToEvent
       requestBody:
         required: true
@@ -576,6 +578,10 @@ paths:
                   type: string
                   format: uuid
                   example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                standbyOk:
+                  type: boolean
+                  default: false
+                  description: The usher agrees to be on standby if the event is full.
       responses:
         '201':
           description: Application submitted
@@ -693,6 +699,30 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: Already answered, no longer available, fully staffed, or booked elsewhere that day
+
+  /usher/applications/{applicationId}/leave-standby:
+    patch:
+      tags: [Ushers]
+      summary: Leave an event's standby list
+      description: |
+        Moves a `standby` application to `withdrawn`. Standby is unpaid, so leaving carries no
+        penalty. Fails with 409 if the usher is no longer on standby (for example, already moved
+        into the team).
+      operationId: leaveStandby
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Left the standby list
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Not on the standby list
 
   /usher/applications/{applicationId}/excuse:
     patch:
@@ -1280,11 +1310,15 @@ paths:
   /organizer/applications/{applicationId}/status:
     patch:
       tags: [Organizers]
-      summary: Accept or reject an applicant
+      summary: Accept, reject, or put an applicant on standby
       description: |
-        Updates an application status to `accepted` or `rejected`.
-        - Accepting adds the talent to `event.hiredTalents`.
-        - Rejecting removes the talent from `event.hiredTalents`.
+        Updates an application status to `accepted`, `rejected`, or `standby`.
+        - Accepting adds the talent to `event.hiredTalents`. Accepting into a full event puts an
+          usher who agreed to standby (`standbyOk`) on the standby list instead.
+        - `standby` needs a pending application with `standbyOk`, room on the event's standby
+          list, and no booking for another event that day.
+        - Rejecting removes the talent from `event.hiredTalents` (or from standby). Removing a
+          hired usher moves the first bookable standby usher into the team.
       operationId: updateApplicationStatus
       parameters:
         - name: applicationId
@@ -1302,7 +1336,7 @@ paths:
               properties:
                 status:
                   type: string
-                  enum: [accepted, rejected]
+                  enum: [accepted, rejected, standby]
                   example: accepted
       responses:
         '200':
@@ -1361,12 +1395,13 @@ paths:
   /organizer/direct-book:
     post:
       tags: [Organizers]
-      summary: Direct book a talent
+      summary: Invite a talent to an event or its standby list
       description: |
-        Directly books (auto-accepts) a talent to an open event without the
-        talent needing to apply first. Business rules:
-        - **BR-12**: Direct booking is auto-accepted.
-        - **BR-01**: Cannot book a talent who already has an application for the event.
+        Sends a booking invitation (a pending direct application) that only the usher can accept.
+        With `asStandby`, the invitation is for the standby list: it also works for a confirmed
+        event that has not started, needs room on the standby list, and accepting it puts the
+        usher on standby. Business rules:
+        - **BR-01**: Cannot invite a talent who already has an application for the event.
       operationId: directBookTalent
       requestBody:
         required: true
@@ -1383,6 +1418,10 @@ paths:
                 talentId:
                   type: string
                   format: uuid
+                asStandby:
+                  type: boolean
+                  default: false
+                  description: Invite onto the standby list instead of a hired spot.
                   example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
       responses:
         '201':
@@ -3031,6 +3070,10 @@ components:
         requiredCount:
           type: integer
           example: 10
+        standbyCount:
+          type: integer
+          example: 3
+          description: Unpaid on-call ushers who fill hired spots that open before the start. At most half the staff count, rounded up.
         genderPreference:
           type: string
           enum: [male, female, any]
@@ -3076,12 +3119,32 @@ components:
           format: uuid
         status:
           type: string
-          enum: [pending, accepted, rejected, excused]
+          enum: [pending, accepted, rejected, excused, standby, withdrawn]
           example: pending
+          description: |
+            `standby`: on call and unpaid; moved in automatically, earliest first, when a hired
+            spot opens before the start. `withdrawn`: the usher left standby or was booked for
+            another event that day. Standby ushers who were not needed become `rejected` at the start.
         isDirect:
           type: boolean
           example: false
           description: True if created by a direct-book action.
+        standbyOk:
+          type: boolean
+          description: The usher agreed to unpaid standby.
+        standbyInvite:
+          type: boolean
+          description: A direct invitation to the standby list.
+        standbySince:
+          type: string
+          format: date-time
+          nullable: true
+          description: Place in the standby queue.
+        promotedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the usher was moved in from standby; an excuse within 2 hours is not late.
         referredBy:
           type: string
           format: uuid
@@ -3348,6 +3411,11 @@ components:
           type: integer
           minimum: 1
           example: 10
+        standbyCount:
+          type: integer
+          minimum: 0
+          default: 0
+          description: At most half the staff count, rounded up.
         genderPreference:
           type: string
           enum: [male, female, any]
@@ -3377,6 +3445,7 @@ components:
         endTime: { type: string }
         location: { type: string }
         requiredCount: { type: integer, minimum: 1 }
+        standbyCount: { type: integer, minimum: 0, description: 'Editable until the event starts; cannot be lower than the current standby list.' }
         genderPreference:
           type: string
           enum: [male, female, any]
