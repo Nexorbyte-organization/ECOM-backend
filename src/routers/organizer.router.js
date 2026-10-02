@@ -33,6 +33,7 @@ organizerRouter.patch('/profile/logo', ...ownerAuth, upload.single('logo'), Erro
 
 // US-200: Dashboard
 organizerRouter.get('/dashboard', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.getDashboard));
+organizerRouter.get('/analytics', ...workspaceAuth, ErrorHandler.asyncHandler(OrganizerController.getAnalytics));
 
 // US-203: Create event (with schema validation)
 organizerRouter.post('/events', ...ownerAuth, completeProfile, ValidationMiddleware.isValid(EventValidator.create), ErrorHandler.asyncHandler(OrganizerController.createEvent));

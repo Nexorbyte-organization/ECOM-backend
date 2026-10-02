@@ -3,6 +3,8 @@
 ## Current behavior
 Admin routes require authenticated admin role. Features include platform totals, user/talent/company lists and invitations, blocking, verification/status updates, deletion, and late-excuse reset.
 
+The admin analytics endpoint returns database aggregates for the full platform; see [analytics](analytics.md). The legacy dashboard endpoint remains available for older clients.
+
 Admins can switch into any active, unblocked organization owner account from the admin user list. The acting session has that owner's full organization permissions, including financial actions, and no admin route access until stopped. The backend records the real admin actor on the request and logs acting mutations; there is no persistent audit table.
 
 Admins list/moderate/delete events and resolve cancel/delete requests. Approval applies the requested action and records resolution as implemented; deletion uses shared relation cleanup. Read controllers before changing transitions. Email verification and talent performance verification differ.

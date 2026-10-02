@@ -11,10 +11,15 @@ import { NotificationService } from '../services/notification.service.js';
 import { normalizeRole } from '../utils/normalization.js';
 import { eventStatus } from '../utils/constant/enums.js';
 import { findAvailableOrganization, issueSession } from '../services/session.service.js';
+import { getAnalytics } from '../services/analytics.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
 export class AdminController {
+    static async getAnalytics(req, res) {
+        const data = await getAnalytics();
+        return res.status(200).json({ success: true, data });
+    }
 
     static async switchToOrganization(req, res, next) {
         const { id } = req.params;
