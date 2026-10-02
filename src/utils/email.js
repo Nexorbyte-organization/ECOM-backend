@@ -1,9 +1,10 @@
 import nodemailer from 'nodemailer';
 
 export class EmailService {
-  static async sendEmail({ to = '', subject = '', html = '', text }) {
+  static async sendEmail({ to = '', subject = '', html = '', text, timeoutMs }) {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
+      ...(timeoutMs ? { connectionTimeout: timeoutMs, greetingTimeout: timeoutMs, socketTimeout: timeoutMs } : {}),
       auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS,

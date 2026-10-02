@@ -17,8 +17,11 @@ import { CheckInPoint } from './models/check-in-point.model.js';
 import { FundingRefund } from './models/funding-refund.model.js';
 import { OrganizationFavorite } from './models/organization-favorite.model.js';
 
+import { EventReminder } from './models/event-reminder.model.js';
+
 // export all models
 export {
+  EventReminder,
   User,
   Event,
   Application,
