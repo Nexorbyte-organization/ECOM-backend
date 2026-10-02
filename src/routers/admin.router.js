@@ -17,6 +17,7 @@ adminRouter.post('/organizations/stop', AuthMiddleware.isAuthenticated({ adminSe
 
 // US-300: Dashboard
 adminRouter.get('/dashboard', ...auth, ErrorHandler.asyncHandler(AdminController.getDashboard));
+adminRouter.get('/analytics', ...auth, ErrorHandler.asyncHandler(AdminController.getAnalytics));
 
 // US-301: All users (with ?search= and ?role= filters)
 adminRouter.get('/users', ...auth, ErrorHandler.asyncHandler(AdminController.getAllUsers));

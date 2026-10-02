@@ -11,6 +11,7 @@ Load only relevant domains, then their source entry points.
 - Settlements, Paymob, cards, and payouts → [payments](backend/payments.md)
 - Notifications and transactional email → [notifications](backend/notifications.md)
 - Administration → [admin](backend/admin.md)
+- Organization and platform analytics → [analytics](backend/analytics.md)
 - Runtime, database, and API boundary → [runtime](backend/runtime.md)
 - Permissions and role mapping → [roles](ROLES.md)
 
