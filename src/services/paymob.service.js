@@ -362,3 +362,18 @@ export const createCardEnrollmentIntention = async ({ enrollment, organizer }) =
   const integrationId = getCardEnrollmentIntegrationId();
   return postIntention(buildCardEnrollmentPayload({ enrollment, organizer, config, integrationId }), config);
 };
+
+// Refunds part or all of a paid test transaction to the card that paid it. Returns Paymob's
+// refund transaction.
+export const refundTransaction = async ({ transactionId, amountCents }) => {
+  if (!transactionId) throw new PaymobRequestError('The original Paymob transaction is unknown');
+  const config = getPaymobTestConfig();
+  return requestJson(`${config.baseUrl}/api/acceptance/void_refund/refund`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${config.secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ transaction_id: Number(transactionId) || String(transactionId), amount_cents: amountCents }),
+  });
+};

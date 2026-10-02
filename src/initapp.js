@@ -10,6 +10,8 @@ import { AppError, ErrorHandler } from './utils/appError.js';
 import * as allRouters from './index.js'
 import { User } from '../db/models/user.model.js';
 import { seedDemoData } from '../scripts/seed-demo-data.js';
+import { EventAutomationService } from './services/event-automation.service.js';
+import { timingSafeEqual } from 'crypto';
 
 dotenv.config({ path: path.resolve('./.env') });
 
@@ -40,6 +42,24 @@ export const initApp = async (app, express) => {
       return res.status(200).json({ server: true, database: true });
     } catch {
       return res.status(200).json({ server: true, database: false });
+    }
+  });
+
+  // Scheduled sweep for time-based event steps (funding deadline, missed check-ins, automatic
+  // payment release). The same steps also run when events are read. Vercel Cron sends
+  // CRON_SECRET as a bearer token; without the variable the endpoint is disabled.
+  app.get('/internal/cron/event-automation', async (req, res, next) => {
+    const secret = process.env.CRON_SECRET?.trim();
+    if (!secret) return next(new AppError('Event automation cron is not configured', 403));
+    const provided = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    const a = Buffer.from(provided);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) return next(new AppError('Invalid cron secret', 401));
+    try {
+      const result = await EventAutomationService.sweep({});
+      return res.status(200).json({ success: true, data: result });
+    } catch (error) {
+      return next(error);
     }
   });
 

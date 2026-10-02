@@ -3,7 +3,7 @@
 ## Current behavior
 Node ES modules, Express 5, Sequelize/PostgreSQL. index.js sets security/CORS/server entry; src/initapp.js validates configuration, connects DB, mounts routes/docs/health/errors. db/connection.js initializes models; db/migrate.js upgrades existing PostgreSQL schema.
 
-Aliases /usher and /talent share a router; /organizer and /provider share a router. Other prefixes: /auth, /admin, /notifications, /payments. /health reports server/database state; /docs/openapi.json exposes generated OpenAPI.
+Aliases /usher and /talent share a router; /organizer and /provider share a router. Other prefixes: /auth, /admin, /notifications, /payments. /health reports server/database state; /docs/openapi.json exposes generated OpenAPI. GET /internal/cron/event-automation runs the event automation sweep when called with `Authorization: Bearer` and the `CRON_SECRET` value (disabled without the variable); `vercel.json` schedules it daily, and the same steps also run lazily on reads, so a more frequent schedule only shortens delays.
 
 List sorting (`?sort=`) ignores malformed field names and secret or contact fields. Optional `APP_TIMEZONE` (default Africa/Cairo) sets the zone for event schedules.
 

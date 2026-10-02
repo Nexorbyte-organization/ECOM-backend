@@ -1,14 +1,19 @@
 import { Op } from 'sequelize';
-import { Event } from '../../db/index.js';
+import { Event, EventFunding } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { eventDayRange } from '../utils/eventSchedule.js';
+import { fundingDeadline, perUsherGrossCents } from './funding-policy.js';
 
 export const AUTO_ACCEPT_MIN_RATING = 4.5;
 // Ushers who reach this many late excuses cannot take new work until an admin resets the counter
 // (or five good events reset it automatically).
 export const LATE_EXCUSE_LIMIT = 5;
 
-export function assertCanTakeNewBookings(talent) {
+export function assertCanTakeNewBookings(talent, now = new Date()) {
+    // Set automatically after repeated no-shows and lifts on its own.
+    if (talent?.suspendedUntil && new Date(talent.suspendedUntil) > now) {
+        throw new AppError(`Bookings are suspended until ${new Date(talent.suspendedUntil).toDateString()} because of missed check-ins`, 403);
+    }
     if ((talent?.lateExcuseCount || 0) >= LATE_EXCUSE_LIMIT) {
         throw new AppError(`You have ${LATE_EXCUSE_LIMIT} late excuses, so you cannot take new events until an administrator reviews your account`, 403);
     }
@@ -21,6 +26,21 @@ export function isAutoAcceptHighRatedTalentsEnabled(organizer) {
 
 export function qualifiesForHighRatedAutoAccept(talent) {
     return Number(talent?.rate || 0) > AUTO_ACCEPT_MIN_RATING;
+}
+
+// Past the funding deadline, an usher can only be booked when their pay is already funded, so no
+// one is booked into a spot that will be cancelled for lack of funding.
+async function assertSeatFundedAfterDeadline({ event, hiredCount, transaction, now = new Date() }) {
+    if (event.fundingMode !== 'prefund') return;
+    const deadline = fundingDeadline(event);
+    if (!deadline || now < deadline) return;
+    const funded = Number(await EventFunding.sum('amountCents', {
+        where: { eventId: event.id, collectionStatus: 'paid' },
+        transaction,
+    }) || 0);
+    if (funded < hiredCount * perUsherGrossCents(event.budget)) {
+        throw new AppError('The funding deadline has passed, so this usher can only be booked after their pay is funded. Fund an extra spot first.', 409);
+    }
 }
 
 export async function updateApplicationDecision({ application, event, status, transaction }) {
@@ -47,6 +67,7 @@ export async function updateApplicationDecision({ application, event, status, tr
         }
 
         if (!hiredTalents.includes(application.talentId)) {
+            await assertSeatFundedAfterDeadline({ event, hiredCount: hiredTalents.length + 1, transaction });
             event.hiredTalents = [...hiredTalents, application.talentId];
         }
     } else {

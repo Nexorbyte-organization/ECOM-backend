@@ -5,7 +5,9 @@
       "src": "index.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["docs/**"]
+        "includeFiles": [
+          "docs/**"
+        ]
       }
     }
   ],
@@ -13,6 +15,12 @@
     {
       "src": "/(.*)",
       "dest": "/index.js"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/internal/cron/event-automation",
+      "schedule": "0 6 * * *"
     }
   ]
 }

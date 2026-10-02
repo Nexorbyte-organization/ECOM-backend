@@ -13,8 +13,8 @@ import { OrganizerCard } from './models/organizer-card.model.js';
 import { OrganizerCardEnrollment } from './models/organizer-card-enrollment.model.js';
 import { EventFunding } from './models/event-funding.model.js';
 import { OrganizerCreditEntry } from './models/organizer-credit-entry.model.js';
-import { CreditWithdrawal } from './models/credit-withdrawal.model.js';
-import { AbsenceHold } from './models/absence-hold.model.js';
+import { CheckInPoint } from './models/check-in-point.model.js';
+import { FundingRefund } from './models/funding-refund.model.js';
 import { OrganizationFavorite } from './models/organization-favorite.model.js';
 
 // export all models
@@ -33,7 +33,7 @@ export {
   OrganizerCardEnrollment,
   EventFunding,
   OrganizerCreditEntry,
-  CreditWithdrawal,
-  AbsenceHold,
+  CheckInPoint,
+  FundingRefund,
   OrganizationFavorite,
 };

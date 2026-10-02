@@ -1137,13 +1137,12 @@ paths:
           $ref: '#/components/responses/NotFound'
     post:
       tags: [Organizers]
-      summary: Mark attendance
+      summary: Staff check-in for an usher whose phone cannot check in
       description: |
-        Records or updates attendance for a hired talent. Business rules:
-        - **FR-ATT-02**: Can only mark attendance after the application deadline or when event is confirmed.
-        - Updates the talent's `consecutiveGoodEvents` counter (BR-07).
-        - Resets the late-excuse counter after 5 consecutive good events (BR-06).
-        - Triggers auto-verify check (FR-VER-01).
+        Present or late only; a missed check-in becomes absent automatically when check-in closes,
+        and nobody can mark an usher absent. Cannot change an usher's own (qr/code/location)
+        check-in or turn present into late. Possible from the check-in window opening until the
+        payments are released. Updates the good-event streak and auto-verification.
       operationId: markAttendance
       parameters:
         - $ref: '#/components/parameters/EventIdParam'
@@ -1161,15 +1160,18 @@ paths:
                   example: "6ba45f12-1234-4562-c3ab-9f963f44bfa4"
                 status:
                   type: string
-                  enum: [present, absent, late]
+                  enum: [present, late]
                   example: present
-                checkInTime:
-                  type: string
-                  format: date-time
-                  example: "2026-08-20T19:15:00Z"
+                location:
+                  type: object
+                  description: The staff phone's location, recorded with the check-in
+                  properties:
+                    latitude: { type: number }
+                    longitude: { type: number }
+                    accuracy: { type: number, nullable: true }
       responses:
         '200':
-          description: Attendance marked
+          description: Usher checked in
           content:
             application/json:
               schema:
@@ -2514,16 +2516,100 @@ paths:
       responses:
         '200': { description: Updated event }
 
+  /organizer/events/{id}/check-in-points:
+    get:
+      tags: [Organizers]
+      summary: The event's staff check-in points
+      operationId: listCheckInPoints
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Points with staff name, location, and live (reported in the last 3 minutes) }
+
+  /organizer/events/{id}/check-in-points/me:
+    put:
+      tags: [Organizers]
+      summary: Open or refresh the caller's check-in point
+      description: |
+        The staff check-in screen calls this every few seconds with the phone's location. During
+        the check-in window (2 hours before the start until 2 hours after the end) the response
+        includes the current QR URL and 6-digit code, which rotate every 30 seconds.
+      operationId: openCheckInPoint
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                label: { type: string, maxLength: 80, description: e.g. Bus 1 or Main gate }
+                location:
+                  type: object
+                  required: [latitude, longitude]
+                  properties:
+                    latitude: { type: number, minimum: -90, maximum: 90 }
+                    longitude: { type: number, minimum: -180, maximum: 180 }
+                    accuracy: { type: number, nullable: true, description: Meters; above 500 is rejected }
+      responses:
+        '200': { description: 'point, open, opensAt, closesAt, and while open: checkInUrl, code, expiresAt' }
+        '400': { description: Location missing or too imprecise }
+        '409': { description: The event is cancelled, completed, or released }
+    delete:
+      tags: [Organizers]
+      summary: Close the caller's check-in point
+      operationId: closeCheckInPoint
+      parameters:
+        - $ref: '#/components/parameters/EventIdParam'
+      responses:
+        '200': { description: Point closed }
+
+  /usher/attendance/check-in:
+    post:
+      tags: [Ushers]
+      summary: Check in with the staff QR, the 6-digit code, or by location
+      description: |
+        qr needs the scanned token; code needs eventId and the code on the staff screen; location
+        ("I'm here") needs eventId. Every method needs the usher's location within 200 m of a staff
+        phone (or, for location, the venue pin) during the check-in window.
+      operationId: usherCheckIn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                method: { type: string, enum: [qr, code, location], default: qr }
+                token: { type: string }
+                code: { type: string, pattern: '^\d{6}$' }
+                eventId: { type: string, format: uuid }
+                location:
+                  type: object
+                  required: [latitude, longitude]
+                  properties:
+                    latitude: { type: number, minimum: -90, maximum: 90 }
+                    longitude: { type: number, minimum: -180, maximum: 180 }
+                    accuracy: { type: number, nullable: true, description: Meters; above 500 is rejected }
+      responses:
+        '200': { description: Attendance with alreadyCheckedIn }
+        '400': { description: Expired or wrong code, or missing/imprecise location }
+        '403': { description: Not hired for the event }
+        '409': { description: Outside the window, too far from staff or venue, or the staff phone is not sharing its location }
+
   /organizer/events/{id}/funding:
     get:
       tags: [Organizers]
-      summary: Advance funding status, release preview, held absences, and cancellation policy
+      summary: Advance funding status, release preview, card refunds, and cancellation policy
       description: Workspace members can read it; saved cards are included for the owner only.
       operationId: getEventFunding
       parameters:
         - $ref: '#/components/parameters/EventIdParam'
       responses:
-        '200': { description: Required, funded, shortfall, surplus, deadline, tier, credit, checkouts, release preview, and holds }
+        '200': { description: Required, funded, shortfall, surplus, deadline, releaseDueAt, tier, credit, checkouts, refunds, and release preview }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
     post:
@@ -2540,6 +2626,7 @@ paths:
               properties:
                 cardId: { type: string, format: uuid, description: Saved test card to charge }
                 useCredit: { type: boolean, default: true }
+                extraSeats: { type: integer, minimum: 0, maximum: 50, default: 0, description: Spots to fund for ushers not hired yet }
       responses:
         '200': { description: The active checkout was reused }
         '201': { description: Credit applied and/or a checkout created; checkoutUrl is null when credit covered everything }
@@ -2568,47 +2655,23 @@ paths:
   /organizer/events/{id}/release-payments:
     post:
       tags: [Organizers]
-      summary: Release a completed prefunded event's payments
-      description: Present/late ushers are paid from the held funds, absent ushers' pay is held for the dispute window, and surplus becomes credit.
+      summary: Release a completed prefunded event's payments before the automatic release
+      description: |
+        Payments are released automatically 24 hours after the event ends; this releases them
+        earlier, once check-in has closed. Checked-in ushers are paid 95%; for no-shows the 5% fee
+        is kept and the wage returns, with any surplus, to the paying card (credit-paid parts to credit).
       operationId: releaseEventPayments
       parameters:
         - $ref: '#/components/parameters/EventIdParam'
       responses:
         '200': { description: Updated funding summary }
-        '409': { description: Event not completed, already released, unmarked attendance, or underfunded }
+        '409': { description: Event not completed, check-in still open, already released, or underfunded }
 
   /organizer/credit:
     get:
       tags: [Organizers]
-      summary: Credit balance, ledger, withdrawals, and payment tier
+      summary: Credit balance, ledger, card refunds, and payment tier
       operationId: getOrganizerCredit
-      responses:
-        '200': { description: Credit overview }
-
-  /organizer/credit/withdrawals:
-    post:
-      tags: [Organizers]
-      summary: Ask to withdraw credit as money (reviewed by an admin)
-      operationId: requestCreditWithdrawal
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [amount]
-              properties: { amount: { type: number, description: EGP, at most two decimals } }
-      responses:
-        '201': { description: Request created and amount reserved }
-        '409': { description: Larger than the balance or another request is pending }
-
-  /organizer/credit/withdrawals/{withdrawalId}:
-    delete:
-      tags: [Organizers]
-      summary: Cancel a pending withdrawal and return the reserved credit
-      operationId: cancelCreditWithdrawal
-      parameters:
-        - { name: withdrawalId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: Credit overview }
 
@@ -2622,92 +2685,13 @@ paths:
       responses:
         '200': { description: Funding status with the event's funding summary }
 
-  /usher/payments/holds:
-    get:
-      tags: [Ushers]
-      summary: Pay held because the usher was marked absent
-      operationId: listMyAbsenceHolds
-      responses:
-        '200': { description: Holds with event, amount, status, deadline, and canDispute }
-
-  /usher/payments/holds/{holdId}/dispute:
-    post:
-      tags: [Ushers]
-      summary: Dispute an absent mark before the window closes
-      operationId: disputeAbsenceHold
-      parameters:
-        - { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [reason]
-              properties: { reason: { type: string, maxLength: 1000 } }
-      responses:
-        '200': { description: Hold marked disputed }
-        '409': { description: Already disputed, settled, or the window closed }
-
   /admin/payments/overview:
     get:
       tags: [Admins]
-      summary: Open disputes, pending withdrawals, and underfunded prefunded events
+      summary: Underfunded prefunded events and failed card refunds
       operationId: getAdminPaymentsOverview
       responses:
-        '200': { description: Payment review queues }
-
-  /admin/payments/holds:
-    get:
-      tags: [Admins]
-      summary: List absence holds
-      operationId: listAbsenceHolds
-      parameters:
-        - { name: status, in: query, schema: { type: string, enum: [held, disputed, returned_to_organizer, paid_to_usher] } }
-      responses:
-        '200': { description: Holds with event, usher, and organization }
-
-  /admin/payments/holds/{holdId}/resolve:
-    patch:
-      tags: [Admins]
-      summary: Decide a held absence for the usher (pay) or the organization (credit)
-      operationId: resolveAbsenceHold
-      parameters:
-        - { name: holdId, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [decision]
-              properties:
-                decision: { type: string, enum: [usher, organizer] }
-                note: { type: string }
-      responses:
-        '200': { description: Resolved hold }
-        '409': { description: Already settled }
-
-  /admin/payments/withdrawals/{withdrawalId}:
-    patch:
-      tags: [Admins]
-      summary: Record a withdrawal as paid (with transfer reference) or reject it
-      operationId: resolveCreditWithdrawal
-      parameters:
-        - { name: withdrawalId, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [decision]
-              properties:
-                decision: { type: string, enum: [paid, rejected] }
-                payoutReference: { type: string }
-                note: { type: string }
-      responses:
-        '200': { description: Resolved withdrawal }
+        '200': { description: underfunded and failedRefunds }
 
   /admin/payments/settlements/{settlementId}/process-payouts:
     post:
@@ -2722,7 +2706,7 @@ paths:
   /admin/organizers/{id}/payments:
     get:
       tags: [Admins]
-      summary: An organization's credit, ledger, withdrawals, and tier
+      summary: An organization's credit, ledger, card refunds, and tier
       operationId: getOrganizerPaymentProfile
       parameters:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
@@ -2773,22 +2757,6 @@ paths:
       operationId: getEventFundingForAdmin
       parameters:
         - $ref: '#/components/parameters/EventIdParam'
-      responses:
-        '200': { description: Funding summary }
-
-  /admin/events/{id}/release-payments:
-    post:
-      tags: [Admins]
-      summary: Release a completed prefunded event, optionally deciding unmarked ushers
-      operationId: adminReleaseEventPayments
-      parameters:
-        - $ref: '#/components/parameters/EventIdParam'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties: { unmarkedAs: { type: string, enum: [present, absent], nullable: true } }
       responses:
         '200': { description: Funding summary }
 

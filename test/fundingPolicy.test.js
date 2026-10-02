@@ -7,10 +7,14 @@ process.env.APP_TIMEZONE = 'Africa/Cairo';
 const {
     cancellationRefundPercent,
     evaluateTier,
+    eventDayCount,
     fundingDeadline,
+    minimumBudget,
     paymentProtection,
     planCancellation,
     planRelease,
+    planUnfundedSeatDrops,
+    releaseDueAt,
     summarizeFunding,
 } = await import('../src/services/funding-policy.js');
 
@@ -93,29 +97,49 @@ test('cancellation splits funding into credit and per-usher compensation with th
     assert.equal(nobody.creditCents, 150000);
 });
 
-test('release pays present ushers, holds absent ones, and blocks unmarked or underfunded teams', () => {
-    const attendance = new Map([['a', { status: 'present' }], ['b', { status: 'late' }], ['c', { status: 'absent' }]]);
-    const plan = planRelease({ hiredTalentIds: ['a', 'b', 'c', 'a'], attendanceByTalent: attendance, perUsherCents: 50000, fundedCents: 200000 });
-    assert.deepEqual(plan.payable.map((line) => [line.talentId, line.attendanceStatus, line.usherAmountCents]), [['a', 'present', 47500], ['b', 'late', 47500]]);
-    assert.deepEqual(plan.absent, [{ talentId: 'c', amountCents: 50000 }]);
-    assert.equal(plan.surplusCents, 50000);
+test('release pays ushers who checked in and keeps the booking fee for no-shows', () => {
+    // 30 booked at 1,000 EGP, 20 attended: 19,000 to ushers, 1,500 fee, 9,500 returned.
+    const hired = Array.from({ length: 30 }, (_, index) => `u${index}`);
+    const attended = new Map(hired.slice(0, 20).map((id, index) => [id, { status: index % 5 ? 'present' : 'late' }]));
+    const plan = planRelease({ hiredTalentIds: hired, attendanceByTalent: attended, perUsherCents: 100000, fundedCents: 3000000 });
+    assert.equal(plan.payable.length, 20);
+    assert.equal(plan.payable.reduce((total, line) => total + line.usherAmountCents, 0), 1900000);
+    assert.equal(plan.payable.reduce((total, line) => total + line.platformFeeCents, 0) + plan.noShowFeeCents, 150000);
+    assert.equal(plan.noShows.length, 10);
+    assert.equal(plan.noShowWageCents, 950000);
+    assert.equal(plan.returnCents, 950000);
     assert.deepEqual(plan.blockers, []);
 
-    const unmarked = planRelease({ hiredTalentIds: ['a', 'd'], attendanceByTalent: attendance, perUsherCents: 50000, fundedCents: 100000 });
-    assert.deepEqual(unmarked.blockers, [{ code: 'unmarked_attendance', talentIds: ['d'] }]);
-    const decided = planRelease({ hiredTalentIds: ['a', 'd'], attendanceByTalent: attendance, perUsherCents: 50000, fundedCents: 100000, unmarkedAs: 'absent' });
-    assert.deepEqual(decided.absent.map((line) => line.talentId), ['d']);
+    // Absent and missing records are both no-shows; surplus funding returns too.
+    const attendance = new Map([['a', { status: 'present' }], ['c', { status: 'absent' }]]);
+    const mixed = planRelease({ hiredTalentIds: ['a', 'b', 'c', 'a'], attendanceByTalent: attendance, perUsherCents: 50000, fundedCents: 200000 });
+    assert.deepEqual(mixed.payable.map((line) => line.talentId), ['a']);
+    assert.deepEqual(mixed.noShows.map((line) => line.talentId), ['b', 'c']);
+    assert.equal(mixed.surplusCents, 50000);
+    assert.equal(mixed.returnCents, 2 * 47500 + 50000);
 
     const underfunded = planRelease({ hiredTalentIds: ['a', 'b'], attendanceByTalent: attendance, perUsherCents: 50000, fundedCents: 60000 });
     assert.deepEqual(underfunded.blockers, [{ code: 'underfunded', shortfallCents: 40000 }]);
 });
 
+test('unfunded bookings are dropped latest first', () => {
+    assert.deepEqual(planUnfundedSeatDrops({ hiredTalentIds: ['a', 'b', 'c'], perUsherCents: 50000, fundedCents: 100000 }), ['c']);
+    assert.deepEqual(planUnfundedSeatDrops({ hiredTalentIds: ['a', 'b'], perUsherCents: 50000, fundedCents: 0 }), ['a', 'b']);
+    assert.deepEqual(planUnfundedSeatDrops({ hiredTalentIds: ['a', 'b'], perUsherCents: 50000, fundedCents: 100000 }), []);
+});
+
+test('pay must be at least 600 EGP for each event day, and release is due a day after the end', () => {
+    assert.equal(eventDayCount(event()), 1);
+    assert.equal(minimumBudget(event()), 600);
+    // 18:00 Cairo is 15:00 UTC; release is due 24 hours later.
+    assert.equal(releaseDueAt(event()).toISOString(), '2026-10-21T15:00:00.000Z');
+});
+
 test('trust needs three paid events and a clean record; an admin override wins', () => {
-    const clean = { paidEventsCount: 3, overdueEventsCount: 0, lostDisputesCount: 0, creditBalanceCents: 0 };
+    const clean = { paidEventsCount: 3, overdueEventsCount: 0, creditBalanceCents: 0 };
     assert.equal(evaluateTier(clean).tier, 'trusted');
     assert.deepEqual(evaluateTier({ ...clean, paidEventsCount: 2 }).reasons, ['not_enough_paid_events']);
     assert.equal(evaluateTier({ ...clean, overdueEventsCount: 1 }).tier, 'standard');
-    assert.equal(evaluateTier({ ...clean, lostDisputesCount: 1 }).tier, 'standard');
     assert.equal(evaluateTier({ ...clean, creditBalanceCents: -1 }).tier, 'standard');
     assert.equal(evaluateTier({ ...clean, paidEventsCount: 0, override: 'trusted' }).tier, 'trusted');
     const forced = evaluateTier({ ...clean, override: 'standard' });

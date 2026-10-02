@@ -7,6 +7,12 @@ const categorySchema = joi.string().custom((value, helpers) => {
     return Object.values(eventCategories).includes(compatible) ? value : helpers.error('any.invalid');
 });
 
+const locationSchema = joi.object({
+    latitude: joi.number().min(-90).max(90).required(),
+    longitude: joi.number().min(-180).max(180).required(),
+    accuracy: joi.number().min(0).allow(null).optional(),
+});
+
 export class EventValidator {
     static create = joi.object({
         title: joi.string().min(3).max(100).required(),
@@ -27,7 +33,9 @@ export class EventValidator {
         dressCode: joi.string().optional(),
         notes: joi.string().optional(),
         whatsappGroupLink: joi.string().uri().allow('').optional(),
-    }).required();
+        venueLatitude: joi.number().min(-90).max(90).allow(null).optional(),
+        venueLongitude: joi.number().min(-180).max(180).allow(null).optional(),
+    }).and('venueLatitude', 'venueLongitude').required();
 
     static updateStatus = joi.object({
         status: joi.string().valid(...Object.values(eventStatus)).required(),
@@ -52,7 +60,9 @@ export class EventValidator {
         dressCode: joi.string().allow('').optional(),
         notes: joi.string().allow('').optional(),
         whatsappGroupLink: joi.string().uri().allow('', null).optional(),
-    }).min(1).required();
+        venueLatitude: joi.number().min(-90).max(90).allow(null).optional(),
+        venueLongitude: joi.number().min(-180).max(180).allow(null).optional(),
+    }).min(1).and('venueLatitude', 'venueLongitude').required();
 }
 
 export class ApplicationValidator {
@@ -80,14 +90,24 @@ export class ApplicationValidator {
 }
 
 export class AttendanceValidator {
+    // Staff can only check someone in. A missed check-in becomes absent automatically.
     static mark = joi.object({
         talentId: joi.string().uuid().required(),
-        status: joi.string().valid('present', 'absent', 'late').required(),
-        checkInTime: joi.date().optional(),
+        status: joi.string().valid('present', 'late').required(),
+        location: locationSchema.optional(),
+    }).required();
+
+    static openPoint = joi.object({
+        location: locationSchema.required(),
+        label: joi.string().trim().max(80).allow('').optional(),
     }).required();
 
     static checkIn = joi.object({
-        token: joi.string().min(20).max(500).required(),
+        method: joi.string().valid('qr', 'code', 'location').default('qr'),
+        token: joi.string().min(20).max(500).when('method', { is: 'qr', then: joi.required(), otherwise: joi.forbidden() }),
+        code: joi.string().pattern(/^\d{6}$/).when('method', { is: 'code', then: joi.required(), otherwise: joi.forbidden() }),
+        eventId: joi.string().uuid().when('method', { is: 'qr', then: joi.forbidden(), otherwise: joi.required() }),
+        location: locationSchema.required(),
     }).required();
 }
 

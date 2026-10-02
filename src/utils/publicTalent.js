@@ -51,11 +51,13 @@ export function publicTalent(talent) {
     return data;
 }
 
-// Applicants share their contact details with the organization they applied to.
-export function talentForOrganization(talent) {
+// Contact details are shared only once the usher is booked, so the first contact and the booking
+// happen on the platform.
+export function talentForOrganization(talent, { booked = false } = {}) {
     if (!talent) return talent;
     const data = withoutSecrets(talent);
     delete data.providerOwnerId;
+    if (!booked) CONTACT_FIELDS.forEach((field) => delete data[field]);
     data.paymentMethods = maskPaymentMethods(data.paymentMethods);
     return data;
 }
