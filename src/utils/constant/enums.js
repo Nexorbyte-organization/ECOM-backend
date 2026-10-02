@@ -27,6 +27,10 @@ export const applicationStatus = {
   ACCEPTED: 'accepted',
   REJECTED: 'rejected',
   EXCUSED: 'excused',
+  // On-call reserve: not booked or paid unless moved into a hired spot before the event starts.
+  STANDBY: 'standby',
+  // The usher left the standby list, or took another booking that day.
+  WITHDRAWN: 'withdrawn',
 };
 Object.freeze(applicationStatus);
 

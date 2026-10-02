@@ -2,13 +2,12 @@ import { DataTypes } from 'sequelize';
 import { sequelize } from '../connection.js';
 
 export const CREDIT_ENTRY_TYPES = [
-  'event_surplus', // unused event funding returned after release
-  'absence_release', // an absent usher's held pay returned after the dispute window
-  'cancellation_refund', // the refundable part of a cancelled event's funding
+  'event_surplus', // unused event funding that was paid from credit
+  'no_show_refund', // credit-paid wages of booked ushers who did not attend
+  'cancellation_refund', // the refundable part of a cancelled event's credit-paid funding
   'late_funding_refund', // a checkout paid after the event no longer needed it
+  'card_refund_failed', // a card refund Paymob rejected, kept as credit instead
   'funding_applied', // credit moved onto an event's funding (negative)
-  'withdrawal', // credit reserved for a withdrawal request (negative)
-  'withdrawal_reversal', // a rejected or cancelled withdrawal returned
   'chargeback', // a Paymob refund of funding that had already been released (negative)
   'admin_adjustment',
 ];
@@ -50,7 +49,6 @@ export const OrganizerCreditEntry = sequelize.define(
     },
     eventId: { type: DataTypes.UUID, allowNull: true },
     fundingId: { type: DataTypes.UUID, allowNull: true },
-    withdrawalId: { type: DataTypes.UUID, allowNull: true },
     note: { type: DataTypes.TEXT, allowNull: true },
     createdBy: { type: DataTypes.UUID, allowNull: true },
   },

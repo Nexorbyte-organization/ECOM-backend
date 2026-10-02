@@ -55,6 +55,7 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "refreshTokenExpiresAt" TIMESTAMP WITH TIME ZONE`,
       createEnumType('enum_users_paymentTierOverride', ['standard', 'trusted']),
       `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "paymentTierOverride" "enum_users_paymentTierOverride"`,
+      `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "suspendedUntil" TIMESTAMP WITH TIME ZONE`,
     ]);
   }
 
@@ -76,6 +77,23 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundingMode" "enum_events_fundingMode" NOT NULL DEFAULT 'pay_after'`,
       `ALTER TABLE "events" ALTER COLUMN "fundingMode" SET DEFAULT 'prefund'`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundsReleasedAt" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLatitude" DOUBLE PRECISION`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLongitude" DOUBLE PRECISION`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "noShowFeeCents" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "standbyCount" INTEGER NOT NULL DEFAULT 0`,
+    ]);
+  }
+
+  const [applicationTables] = await sequelize.query(`
+    SELECT to_regclass('public.applications') IS NOT NULL AS "hasApplications"
+  `);
+  if (applicationTables[0]?.hasApplications) {
+    await runStatements([
+      ...['standby', 'withdrawn'].map((value) => `ALTER TYPE "enum_applications_status" ADD VALUE IF NOT EXISTS '${value}'`),
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyOk" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyInvite" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbySince" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "promotedAt" TIMESTAMP WITH TIME ZONE`,
     ]);
   }
 
@@ -86,7 +104,21 @@ export const migrateExistingSchema = async () => {
     await runStatements([
       createEnumType('enum_attendances_checkInMethod', ['qr', 'manual', 'admin']),
       `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInMethod" "enum_attendances_checkInMethod" NOT NULL DEFAULT 'manual'`,
+      ...['code', 'location', 'staff', 'auto'].map((value) => `ALTER TYPE "enum_attendances_checkInMethod" ADD VALUE IF NOT EXISTS '${value}'`),
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInLatitude" DOUBLE PRECISION`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInLongitude" DOUBLE PRECISION`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInPointId" UUID`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "recordedBy" UUID`,
     ]);
+  }
+
+  const [creditTypes] = await sequelize.query(`
+    SELECT 1 FROM pg_type WHERE typname = 'enum_organizer_credit_entries_type' LIMIT 1
+  `);
+  if (creditTypes.length) {
+    await runStatements(['no_show_refund', 'card_refund_failed'].map((value) => (
+      `ALTER TYPE "enum_organizer_credit_entries_type" ADD VALUE IF NOT EXISTS '${value}'`
+    )));
   }
 
   const [settlementTables] = await sequelize.query(`

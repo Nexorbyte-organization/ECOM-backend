@@ -1,10 +1,12 @@
 import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
-import { CreditWithdrawal, Event, EventFunding, EventSettlement, OrganizerCard, User } from '../../db/index.js';
+import { Event, EventFunding, EventSettlement, OrganizerCard, User } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { FundingService } from '../services/funding.service.js';
+import { FundingRefundService } from '../services/funding-refund.service.js';
 import { OrganizerCreditService } from '../services/organizer-credit.service.js';
-import { AbsenceHoldService } from '../services/absence-hold.service.js';
+import { AttendanceService } from '../services/attendance.service.js';
+import { EventAutomationService } from '../services/event-automation.service.js';
 import { isUuid, notifySafely, processAutomaticPayouts, serializeSettlement } from '../services/settlement.service.js';
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
@@ -28,16 +30,15 @@ const ownedEvent = async (eventId, authUser) => {
   return event;
 };
 
+// Credit is only spent on future events; returned card payments go back to the card.
 const creditOverview = async (organizerId) => {
-  await AbsenceHoldService.settleExpired({ organizerId });
-  const [balanceCents, entries, withdrawals, tier, activeHolds] = await Promise.all([
+  const [balanceCents, entries, tier, refunds] = await Promise.all([
     OrganizerCreditService.balance(organizerId),
     OrganizerCreditService.listEntries(organizerId),
-    CreditWithdrawal.findAll({ where: { organizerId }, order: [['createdAt', 'DESC']], limit: 20 }),
     OrganizerCreditService.evaluateOrganizerTier(organizerId),
-    FundingService.activeHoldsCount(organizerId),
+    FundingRefundService.listForOrganizer(organizerId),
   ]);
-  const eventIds = [...new Set(entries.map((entry) => entry.eventId).filter(Boolean))];
+  const eventIds = [...new Set([...entries, ...refunds].map((item) => item.eventId).filter(Boolean))];
   const events = eventIds.length
     ? await Event.findAll({ where: { id: { [Op.in]: eventIds } }, paranoid: false, attributes: ['id', 'title'] })
     : [];
@@ -46,10 +47,8 @@ const creditOverview = async (organizerId) => {
     balance: balanceCents / 100,
     balanceCents,
     tier,
-    activeHolds,
     entries: entries.map((entry) => ({ ...entry.toJSON(), eventTitle: titles.get(entry.eventId) || null })),
-    withdrawals,
-    pendingWithdrawal: withdrawals.find((withdrawal) => withdrawal.status === 'pending') || null,
+    refunds: refunds.map((refund) => ({ ...refund.toJSON(), eventTitle: titles.get(refund.eventId) || null })),
   };
 };
 
@@ -57,6 +56,8 @@ export class FundingController {
   // ── Organization ─────────────────────────────────────────────────────────────
   static async getEventFunding(req, res) {
     const event = await ownedEvent(req.params.id, req.authUser);
+    await EventAutomationService.sweepQuietly({ eventIds: [event.id] });
+    await event.reload();
     const data = await FundingService.publicSummary(event);
     if (req.authUser.role === 'organizer') {
       data.savedCards = await OrganizerCard.findAll({
@@ -74,6 +75,7 @@ export class FundingController {
       organizerId: event.organizerId,
       cardId: req.body?.cardId || null,
       useCredit: req.body?.useCredit ?? true,
+      extraSeats: req.body?.extraSeats === undefined ? 0 : Number(req.body.extraSeats),
       actorId: req.authUser.id,
     });
     const refreshed = await Event.findByPk(event.id);
@@ -96,8 +98,10 @@ export class FundingController {
     return res.status(200).json({ success: true, data: updated });
   }
 
+  // Releases before the automatic time, once check-in has closed.
   static async releaseEventFunds(req, res) {
     const event = await ownedEvent(req.params.id, req.authUser);
+    await AttendanceService.finalizeAttendance(event);
     await FundingService.releaseEventFunds({ eventId: event.id, organizerId: event.organizerId, actorId: req.authUser.id });
     const refreshed = await Event.findByPk(event.id);
     return res.status(200).json({ success: true, data: await FundingService.publicSummary(refreshed) });
@@ -129,106 +133,13 @@ export class FundingController {
     return res.status(200).json({ success: true, data: await creditOverview(getOrganizerId(req.authUser)) });
   }
 
-  static async requestWithdrawal(req, res) {
-    const amountCents = toCents(req.body?.amount);
-    if (!Number.isSafeInteger(amountCents) || amountCents <= 0) throw new AppError('Enter a valid amount in EGP', 400);
-    const organizerId = getOrganizerId(req.authUser);
-    await AbsenceHoldService.settleExpired({ organizerId });
-    await OrganizerCreditService.requestWithdrawal({ organizerId, amountCents, requestedBy: req.authUser.id });
-    return res.status(201).json({ success: true, data: await creditOverview(organizerId) });
-  }
-
-  static async cancelWithdrawal(req, res) {
-    const organizerId = getOrganizerId(req.authUser);
-    await OrganizerCreditService.closeWithdrawal({
-      withdrawalId: requireUuidParam(req.params.withdrawalId, 'withdrawal ID'),
-      organizerId, status: 'cancelled', actorId: req.authUser.id,
-    });
-    return res.status(200).json({ success: true, data: await creditOverview(organizerId) });
-  }
-
-  // ── Usher ────────────────────────────────────────────────────────────────────
-  static async listMyHolds(req, res) {
-    await AbsenceHoldService.settleExpired({ talentId: req.authUser.id });
-    const holds = await AbsenceHoldService.listWithDetails({ talentId: req.authUser.id });
-    return res.status(200).json({
-      success: true,
-      data: holds.map(({ organization, ...hold }) => ({ ...hold, organization: organization ? { fullName: organization.fullName } : null })),
-    });
-  }
-
-  static async disputeHold(req, res) {
-    const hold = await AbsenceHoldService.dispute({
-      holdId: requireUuidParam(req.params.holdId, 'held payment ID'),
-      talentId: req.authUser.id,
-      reason: req.body?.reason,
-    });
-    return res.status(200).json({ success: true, data: hold });
-  }
-
   // ── Admin ────────────────────────────────────────────────────────────────────
   static async adminOverview(req, res) {
-    await AbsenceHoldService.settleExpired();
-    const [disputes, withdrawals, underfunded] = await Promise.all([
-      AbsenceHoldService.listWithDetails({ status: 'disputed' }),
-      CreditWithdrawal.findAll({ where: { status: 'pending' }, order: [['createdAt', 'ASC']] }),
+    const [underfunded, failedRefunds] = await Promise.all([
       FundingService.underfundedEvents(),
+      FundingRefundService.listFailed(),
     ]);
-    const organizerIds = [...new Set(withdrawals.map((item) => item.organizerId))];
-    const organizers = organizerIds.length
-      ? await User.findAll({ where: { id: { [Op.in]: organizerIds } }, paranoid: false, attributes: ['id', 'fullName', 'email', 'mobileNumber'] })
-      : [];
-    const byId = new Map(organizers.map((organizer) => [organizer.id, organizer]));
-    const balances = await Promise.all(organizerIds.map((id) => OrganizerCreditService.balance(id)));
-    const balanceById = new Map(organizerIds.map((id, index) => [id, balances[index]]));
-    return res.status(200).json({
-      success: true,
-      data: {
-        disputes,
-        withdrawals: withdrawals.map((withdrawal) => {
-          const organizer = byId.get(withdrawal.organizerId);
-          return {
-            ...withdrawal.toJSON(),
-            organization: organizer ? { _id: organizer.id, fullName: organizer.fullName, email: organizer.email, mobileNumber: organizer.mobileNumber } : null,
-            remainingBalance: (balanceById.get(withdrawal.organizerId) || 0) / 100,
-          };
-        }),
-        underfunded,
-      },
-    });
-  }
-
-  static async listHolds(req, res) {
-    await AbsenceHoldService.settleExpired();
-    const status = req.query.status;
-    const allowed = ['held', 'disputed', 'returned_to_organizer', 'paid_to_usher'];
-    if (status && !allowed.includes(status)) throw new AppError('Invalid status filter', 400);
-    return res.status(200).json({ success: true, data: await AbsenceHoldService.listWithDetails(status ? { status } : {}) });
-  }
-
-  static async resolveHold(req, res) {
-    const hold = await AbsenceHoldService.resolveByAdmin({
-      holdId: requireUuidParam(req.params.holdId, 'held payment ID'),
-      decision: req.body?.decision,
-      adminId: req.authUser.id,
-      note: req.body?.note,
-    });
-    return res.status(200).json({ success: true, data: hold });
-  }
-
-  static async resolveWithdrawal(req, res) {
-    const decision = req.body?.decision;
-    if (!['paid', 'rejected'].includes(decision)) throw new AppError('Decision must be paid or rejected', 400);
-    const payoutReference = typeof req.body?.payoutReference === 'string' ? req.body.payoutReference.trim().slice(0, 120) : null;
-    if (decision === 'paid' && !payoutReference) throw new AppError('Record the transfer reference for a paid withdrawal', 400);
-    const withdrawal = await OrganizerCreditService.closeWithdrawal({
-      withdrawalId: requireUuidParam(req.params.withdrawalId, 'withdrawal ID'),
-      status: decision,
-      actorId: req.authUser.id,
-      adminNote: typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 1000) : null,
-      payoutReference,
-    });
-    return res.status(200).json({ success: true, data: withdrawal });
+    return res.status(200).json({ success: true, data: { underfunded, failedRefunds } });
   }
 
   static async getOrganizerPaymentProfile(req, res) {
@@ -276,14 +187,6 @@ export class FundingController {
       note: note.slice(0, 1000), createdBy: req.authUser.id,
     });
     return res.status(201).json({ success: true, data: await creditOverview(organizerId) });
-  }
-
-  static async adminReleaseEvent(req, res) {
-    const eventId = requireUuidParam(req.params.id, 'event ID');
-    const unmarkedAs = req.body?.unmarkedAs ?? null;
-    await FundingService.releaseEventFunds({ eventId, actorId: req.authUser.id, unmarkedAs });
-    const event = await Event.findByPk(eventId);
-    return res.status(200).json({ success: true, data: await FundingService.publicSummary(event) });
   }
 
   // Sends queued payouts left waiting, for example while the Payouts sandbox was not configured.

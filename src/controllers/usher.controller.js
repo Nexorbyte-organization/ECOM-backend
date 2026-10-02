@@ -11,18 +11,21 @@ import { normalizeEventCategories, normalizeEventCategory, normalizeLanguages } 
 import { NotificationService } from '../services/notification.service.js';
 import {
     assertCanTakeNewBookings,
+    isWithinPromotionGrace,
     LATE_EXCUSE_LIMIT,
     tryAutoAcceptApplication,
     updateApplicationDecision,
 } from '../services/application-decision.service.js';
+import { StandbyService } from '../services/standby.service.js';
 import { TokenService } from '../utils/token.js';
 import { eventForTalent } from '../utils/eventVisibility.js';
 import { maskPaymentMethods, publicTalent, withoutSecrets } from '../utils/publicTalent.js';
 import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
-import { attendanceQrMatchesEvent, parseAttendanceQrToken } from '../utils/attendanceQr.js';
-import { checkInStatusAt, hasEventStarted } from '../utils/eventSchedule.js';
+import { hasEventStarted } from '../utils/eventSchedule.js';
 import { FundingService } from '../services/funding.service.js';
+import { AttendanceService } from '../services/attendance.service.js';
+import { EventAutomationService } from '../services/event-automation.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
@@ -36,10 +39,6 @@ async function resumeHeldPayouts(talentId) {
     }
 }
 
-// FR-VER-01: Auto-verify talent after hitting performance thresholds
-const AUTO_VERIFY_MIN_EVENTS = 10;
-const AUTO_VERIFY_MIN_RATING = 4.0;
-
 async function maybeAutoAcceptHighRatedApplication({ application, event, talent }) {
     return sequelize.transaction(async (transaction) => {
         const lockedApplication = await Application.findByPk(application.id, {
@@ -47,14 +46,14 @@ async function maybeAutoAcceptHighRatedApplication({ application, event, talent 
             lock: transaction.LOCK.UPDATE,
         });
         if (!lockedApplication || lockedApplication.status !== 'pending') {
-            return { application, autoAccepted: false };
+            return { application, autoAccepted: false, standby: false };
         }
 
         const lockedEvent = await Event.findByPk(event.id, {
             transaction,
             lock: transaction.LOCK.UPDATE,
         });
-        if (!lockedEvent) return { application: lockedApplication, autoAccepted: false };
+        if (!lockedEvent) return { application: lockedApplication, autoAccepted: false, standby: false };
 
         const organizer = await User.findByPk(lockedEvent.organizerId, { transaction });
         const currentTalent = await User.findByPk(talent.id, { transaction });
@@ -69,34 +68,9 @@ async function maybeAutoAcceptHighRatedApplication({ application, event, talent 
         return {
             application: lockedApplication,
             autoAccepted: result.accepted,
+            standby: Boolean(result.standby),
         };
     });
-}
-
-async function checkAndAutoVerify(userId) {
-    const user = await User.findByPk(userId);
-    if (!user || user.role !== 'usher') return;
-
-    const acceptedApps = await Application.findAll({ where: { talentId: userId, status: 'accepted' } });
-    const eventIds = acceptedApps.map(a => a.eventId);
-
-    const presentCount = eventIds.length > 0
-        ? await Attendance.count({
-            where: { talentId: userId, eventId: { [Op.in]: eventIds }, status: { [Op.in]: ['present', 'late'] } }
-          })
-        : 0;
-
-    const attendanceCount = eventIds.length > 0
-        ? await Attendance.count({ where: { talentId: userId, eventId: { [Op.in]: eventIds } } })
-        : 0;
-
-    user.completedEventsCount = presentCount;
-    user.reliabilityScore = attendanceCount > 0 ? Math.round((presentCount / attendanceCount) * 100) : 100;
-
-    if (presentCount >= AUTO_VERIFY_MIN_EVENTS && (user.rate || 0) >= AUTO_VERIFY_MIN_RATING) {
-        user.isVerified = true;
-    }
-    await user.save();
 }
 
 export class UsherController {
@@ -295,6 +269,7 @@ export class UsherController {
     }
 
     static async getEventById(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const event = await Event.findByPk(req.params.id);
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
@@ -308,81 +283,21 @@ export class UsherController {
         const hired = application?.status === 'accepted';
         const data = eventForTalent(event, hired, req.authUser.id);
         if (hired) data.paymentProtection = await FundingService.protectionFor(event);
+        if (application?.status === 'standby') data.standbyPosition = await StandbyService.positionOf(application);
         return res.status(200).json({ success: true, data });
     }
 
-    static async checkInWithAttendanceQr(req, res, next) {
-        const { token } = req.body;
-        const parsedToken = parseAttendanceQrToken(token);
-        if (!parsedToken) return next(new AppError('Invalid attendance QR code', 400));
-
-        const talentId = req.authUser.id;
-        const { attendance, event, previousStatus } = await sequelize.transaction(async (transaction) => {
-            const event = await Event.findByPk(parsedToken.eventId, { transaction });
-            if (!event || !attendanceQrMatchesEvent(token, event)) {
-                throw new AppError('Invalid attendance QR code', 400);
-            }
-            if (event.status === 'cancelled' || event.status === 'completed') {
-                throw new AppError('Check-in is closed for this event', 409);
-            }
-            if (!(event.hiredTalents || []).includes(talentId)) {
-                throw new AppError('You are not hired for this event', 403);
-            }
-            // The QR only works on the event day, so a shared screenshot cannot be used remotely days early.
-            const arrivalStatus = checkInStatusAt(event);
-            if (arrivalStatus === 'early') {
-                throw new AppError('Check-in opens 2 hours before the event starts', 409);
-            }
-            if (arrivalStatus === 'closed') {
-                throw new AppError('Check-in is closed for this event', 409);
-            }
-
-            const talent = await User.findByPk(talentId, {
-                transaction,
-                lock: transaction.LOCK.UPDATE,
-            });
-            const existingAttendance = await Attendance.findOne({
-                where: { eventId: event.id, talentId },
-                transaction,
-                lock: transaction.LOCK.UPDATE,
-            });
-            const previousStatus = existingAttendance?.status || null;
-            const attendance = existingAttendance || await Attendance.create({
-                eventId: event.id,
-                talentId,
-                status: arrivalStatus,
-                checkInTime: new Date(),
-                checkInMethod: 'qr',
-            }, { transaction });
-
-            // A repeated scan keeps the first arrival; an organizer's absent mark is replaced by the scan.
-            if (existingAttendance && !['present', 'late'].includes(previousStatus)) {
-                attendance.status = arrivalStatus;
-                attendance.checkInTime ||= new Date();
-                attendance.checkInMethod = 'qr';
-                await attendance.save({ transaction });
-            } else if (existingAttendance && attendance.checkInMethod !== 'qr') {
-                // A manual present mark becomes QR-verified once the usher scans.
-                attendance.checkInMethod = 'qr';
-                await attendance.save({ transaction });
-            }
-
-            const wasGood = previousStatus === 'present' || previousStatus === 'late';
-            if (talent && !wasGood) {
-                talent.consecutiveGoodEvents = (talent.consecutiveGoodEvents || 0) + 1;
-                if (talent.consecutiveGoodEvents >= 5) {
-                    talent.lateExcuseCount = 0;
-                    talent.consecutiveGoodEvents = 0;
-                }
-                await talent.save({ transaction });
-            }
-
-            return { attendance, event, previousStatus };
+    // Scan the staff QR, type its 6-digit code, or "I'm here" by location. Every method needs the
+    // usher's location near a staff phone (or the venue pin), so it cannot be done remotely.
+    static async checkIn(req, res) {
+        const { attendance, event, alreadyCheckedIn } = await AttendanceService.selfCheckIn({
+            talentId: req.authUser.id,
+            method: req.body.method || 'qr',
+            token: req.body.token,
+            code: req.body.code,
+            eventId: req.body.eventId,
+            location: req.body.location,
         });
-
-        await checkAndAutoVerify(talentId);
-        const alreadyCheckedIn = previousStatus === 'present' || previousStatus === 'late';
-
         return res.status(200).json({
             success: true,
             message: alreadyCheckedIn ? 'You are already checked in'
@@ -430,11 +345,13 @@ export class UsherController {
         if (existing) return next(new AppError('You have already applied to this event', 400));
 
         const application = await Application.create({
-            eventId, talentId, status: 'pending', isDirect: false, appliedAt: new Date(),
+            eventId, talentId, status: 'pending', isDirect: false, standbyOk: Boolean(req.body.standbyOk), appliedAt: new Date(),
         });
+        // A full event puts an auto-accepted usher who agreed to standby on the list instead.
         const {
             application: finalApplication,
             autoAccepted,
+            standby: autoStandby,
         } = await maybeAutoAcceptHighRatedApplication({
             application,
             event,
@@ -443,19 +360,23 @@ export class UsherController {
 
         await NotificationService.create({
             userId: event.organizerId,
-            title: autoAccepted ? 'Application auto-accepted' : 'New event application',
+            title: autoAccepted ? 'Application auto-accepted' : autoStandby ? 'Usher auto-added to standby' : 'New event application',
             message: autoAccepted
                 ? `${req.authUser.fullName} was auto-accepted for “${event.title}” based on their rating.`
-                : `${req.authUser.fullName} applied to “${event.title}”.`,
-            type: autoAccepted ? 'success' : 'info',
+                : autoStandby
+                    ? `${req.authUser.fullName} was added to the standby list for “${event.title}” based on their rating, because the event is full.`
+                    : `${req.authUser.fullName} applied to “${event.title}”.`,
+            type: autoAccepted || autoStandby ? 'success' : 'info',
             link: `/provider/events/${event.id}`,
         });
-        if (autoAccepted) {
+        if (autoAccepted || autoStandby) {
             await NotificationService.create({
                 userId: talentId,
-                title: 'Application accepted',
-                message: `Your application to “${event.title}” was accepted automatically.`,
-                type: 'success',
+                title: autoAccepted ? 'Application accepted' : 'Added to standby',
+                message: autoAccepted
+                    ? `Your application to “${event.title}” was accepted automatically.`
+                    : `“${event.title}” is full, so you’re on standby. If a spot opens before the event starts, you’ll be moved in automatically and notified.`,
+                type: autoAccepted ? 'success' : 'info',
                 link: `/talent/jobs/${event.id}`,
             });
         }
@@ -464,13 +385,16 @@ export class UsherController {
             success: true,
             message: autoAccepted
                 ? 'Application submitted and accepted automatically'
-                : 'Application submitted successfully',
+                : autoStandby
+                    ? 'Application submitted and added to standby'
+                    : 'Application submitted successfully',
             data: finalApplication,
         });
     }
 
     // US-105: Track my applications & events (with ApiFeature pagination)
     static async getMyApplications(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
         const { filter } = req.query;
         const { offset, limit: size } = new ApiFeature(req.query).pagination().build();
@@ -511,6 +435,7 @@ export class UsherController {
 
     // US-106: Get event history on profile page
     static async getMyEventHistory(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
 
         const applications = await Application.findAll({
@@ -574,27 +499,33 @@ export class UsherController {
                 throw new AppError('This booking invitation is no longer available', 409);
             }
 
+            // Accepting a standby invitation is the usher's agreement to unpaid standby.
+            const standbyInvite = lockedApplication.standbyInvite;
+            if (decision === 'accept' && standbyInvite) lockedApplication.standbyOk = true;
             await updateApplicationDecision({
                 application: lockedApplication,
                 event: lockedEvent,
-                status: decision === 'accept' ? 'accepted' : 'rejected',
+                status: decision !== 'accept' ? 'rejected' : standbyInvite ? 'standby' : 'accepted',
                 transaction,
             });
             return { application: lockedApplication, event: lockedEvent };
         });
 
         const accepted = decision === 'accept';
+        const kind = application.standbyInvite ? 'standby invitation' : 'invitation';
         await NotificationService.create({
             userId: event.organizerId,
-            title: accepted ? 'Booking invitation accepted' : 'Booking invitation declined',
-            message: `${req.authUser.fullName} ${accepted ? 'accepted' : 'declined'} your invitation to “${event.title}”.`,
+            title: application.standbyInvite
+                ? (accepted ? 'Standby invitation accepted' : 'Standby invitation declined')
+                : (accepted ? 'Booking invitation accepted' : 'Booking invitation declined'),
+            message: `${req.authUser.fullName} ${accepted ? 'accepted' : 'declined'} your ${kind} to “${event.title}”.`,
             type: accepted ? 'success' : 'warning',
             link: `/provider/events/${event.id}`,
         });
 
         return res.status(200).json({
             success: true,
-            message: accepted ? 'Booking accepted' : 'Booking declined',
+            message: !accepted ? 'Booking declined' : application.standbyInvite ? 'You’re on standby' : 'Booking accepted',
             data: application,
         });
     }
@@ -619,11 +550,12 @@ export class UsherController {
             return next(new AppError('Cannot excuse from an event that has already started', 400));
         }
 
-        // Determine late excuse (BR-04)
+        // Determine late excuse (BR-04). Someone just moved in from standby did not choose that
+        // moment, so they can drop out shortly after without a penalty.
         const now = new Date();
         const deadline = new Date(event.applicationDeadline);
         const msIn3Days = 3 * 24 * 60 * 60 * 1000;
-        const isLateExcuse = (deadline - now) <= msIn3Days;
+        const isLateExcuse = (deadline - now) <= msIn3Days && !isWithinPromotionGrace(application, now);
 
         application.status = 'excused';
         await application.save();
@@ -651,6 +583,7 @@ export class UsherController {
             type: 'warning',
             link: `/provider/events/${event.id}`,
         });
+        await StandbyService.fillOpenSpotsQuietly(event.id);
 
         return res.status(200).json({
             success: true,
@@ -659,6 +592,34 @@ export class UsherController {
                 : 'Excused successfully. No penalty applied.',
             data: { applicationStatus: application.status, isLateExcuse, lateExcuseCount },
         });
+    }
+
+    // Standby is unpaid, so leaving the list carries no penalty.
+    static async leaveStandby(req, res, next) {
+        const talentId = req.authUser.id;
+        const application = await Application.findOne({ where: { id: req.params.applicationId, talentId } });
+        if (!application) return next(new AppError('Application not found', 404));
+        // Conditional, so it cannot undo a move into the team that happens at the same time.
+        const [left] = await Application.update(
+            { status: 'withdrawn' },
+            { where: { id: application.id, talentId, status: 'standby' } },
+        );
+        if (!left) return next(new AppError('You are not on the standby list for this event', 409));
+        await application.reload();
+
+        const event = await Event.findByPk(application.eventId);
+        if (event) {
+            await NotificationService.create({
+                userId: event.organizerId,
+                title: 'Usher left standby',
+                message: `${req.authUser.fullName} left the standby list for “${event.title}”.`,
+                type: 'info',
+                link: `/provider/events/${event.id}`,
+                sendEmail: false,
+            });
+        }
+
+        return res.status(200).json({ success: true, message: 'You left the standby list', data: application });
     }
 
     // US-109: Refer another talent to an event
@@ -733,7 +694,7 @@ export class UsherController {
             return next(new AppError('Referral invite is no longer available', 410));
         }
         const existingApplication = await Application.findOne({ where: { eventId: event.id, talentId: referredTalentId } });
-        if (existingApplication && ['accepted', 'rejected'].includes(existingApplication.status)) {
+        if (existingApplication && ['accepted', 'rejected', 'standby', 'withdrawn'].includes(existingApplication.status)) {
             return next(new AppError('You already have a final application for this event', 409));
         }
         const [referral] = await Referral.findOrCreate({
@@ -780,7 +741,7 @@ export class UsherController {
 
         // Cannot refer accepted/rejected (BR-13)
         const existingApp = await Application.findOne({ where: { eventId, talentId: referredTalentId } });
-        if (existingApp && ['accepted', 'rejected'].includes(existingApp.status)) {
+        if (existingApp && ['accepted', 'rejected', 'standby', 'withdrawn'].includes(existingApp.status)) {
             return next(new AppError('Cannot refer a talent who is already accepted or rejected for this event', 400));
         }
 
@@ -825,6 +786,7 @@ export class UsherController {
 
     // ─── US-100-EXT: Usher Dashboard Stats ──────────────────────────────────────
     static async getDashboard(req, res, next) {
+        await EventAutomationService.sweepQuietly({ talentId: req.authUser.id });
         const talentId = req.authUser.id;
 
         const [
@@ -1124,4 +1086,3 @@ export class UsherController {
 }
 
 // Export helper for use by organizer controller after marking attendance/reviews
-export { checkAndAutoVerify };

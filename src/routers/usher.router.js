@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { ErrorHandler } from '../utils/appError.js';
 import { AuthMiddleware } from '../middlewares/authentication.js';
-import { FundingController } from '../controllers/funding.controller.js';
 import { UsherController } from '../controllers/usher.controller.js';
 import { EventMapController } from '../controllers/event-map.controller.js';
 import { MulterService } from '../utils/multer.cloud.js';
@@ -52,21 +51,22 @@ usherRouter.get('/events/:id', ...auth, ErrorHandler.asyncHandler(UsherControlle
 usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapController.getUsherMap));
 
 // Pay held because the usher was marked absent at a prefunded event, and disputes of that mark.
-usherRouter.get('/payments/holds', ...auth, ErrorHandler.asyncHandler(FundingController.listMyHolds));
-usherRouter.post('/payments/holds/:holdId/dispute', ...auth, ErrorHandler.asyncHandler(FundingController.disputeHold));
 
-// Event-day check-in from an organizer-displayed QR code.
-usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));
+// Event-day check-in: scan the staff QR, type its 6-digit code, or "I'm here" by location.
+usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkIn));
 
 // US-211: Accept or decline a direct booking invitation
 usherRouter.patch('/applications/:applicationId/respond', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.respond), ErrorHandler.asyncHandler(UsherController.respondToBookingInvitation));
+
+// Leave an event's standby list. Standby is unpaid, so leaving carries no penalty.
+usherRouter.patch('/applications/:applicationId/leave-standby', ...auth, ErrorHandler.asyncHandler(UsherController.leaveStandby));
 
 // US-107: Excuse from an accepted event
 usherRouter.patch('/applications/:applicationId/excuse', ...auth, completeProfile, ErrorHandler.asyncHandler(UsherController.excuseFromEvent));
 
 // US-109: Refer a talent to an event (with schema validation)
 usherRouter.post('/refer', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.refer), ErrorHandler.asyncHandler(UsherController.referTalent));
-usherRouter.post('/referral-invites', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.apply), ErrorHandler.asyncHandler(UsherController.createReferralInvite));
+usherRouter.post('/referral-invites', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.referralInvite), ErrorHandler.asyncHandler(UsherController.createReferralInvite));
 usherRouter.post('/referral-invites/:token/redeem', ...auth, ErrorHandler.asyncHandler(UsherController.redeemReferralInvite));
 
 // US-109-EXT: Manage incoming referrals

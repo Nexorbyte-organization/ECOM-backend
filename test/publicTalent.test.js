@@ -30,11 +30,15 @@ test('public talent hides the phone alias added by the user serializer', () => {
     assert.equal(result.otp, undefined);
 });
 
-test('organizations see masked payout accounts and applicant contact details', () => {
-    const result = talentForOrganization({ toJSON: () => ({
-        fullName: 'Usher', phoneNumber: '01012345678', otpAttempts: 1, providerOwnerId: null,
+test('organizations see masked payout accounts, and contact details only for booked ushers', () => {
+    const talent = { toJSON: () => ({
+        fullName: 'Usher', phoneNumber: '01012345678', email: 'usher@example.com', otpAttempts: 1, providerOwnerId: null,
         paymentMethods: [{ id: 'm1', provider: 'Vodafone Cash', type: 'wallet', mobileNumber: '01012345678', iban: 'EG000', isDefault: true }],
-    }) });
+    }) };
+    const applicant = talentForOrganization(talent);
+    assert.equal(applicant.phoneNumber, undefined);
+    assert.equal(applicant.email, undefined);
+    const result = talentForOrganization(talent, { booked: true });
     assert.equal(result.phoneNumber, '01012345678');
     assert.equal(result.otpAttempts, undefined);
     assert.deepEqual(result.paymentMethods, [{

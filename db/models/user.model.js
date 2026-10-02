@@ -161,6 +161,11 @@ export const User = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    // Set automatically after repeated no-shows; the usher cannot take new work until it passes.
+    suspendedUntil: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
     // Talent stats
     totalRatings: {
       type: DataTypes.INTEGER,

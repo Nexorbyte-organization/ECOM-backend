@@ -6,11 +6,14 @@ import { calculateSettlementLineAmounts, splitPlatformFee } from './settlement.s
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-// A standard organization must fund the full team before confirming it; later hires or pay rises
-// are due this long before the event starts.
+// A standard organization must fund the full team before confirming it; ushers hired later are
+// due this long before the event starts, after which unfunded bookings are cancelled.
 export const FUNDING_DEADLINE_HOURS = 48;
-// An usher marked absent can dispute the mark for this long after the payments are released.
-export const DISPUTE_WINDOW_HOURS = 72;
+// Payments are released automatically this long after the event ends. Until then staff can still
+// check in an usher whose phone failed.
+export const RELEASE_AFTER_END_HOURS = 24;
+// The lowest pay an event may offer each usher for each day it runs.
+export const MIN_PAY_PER_DAY_EGP = 600;
 // Share of the funding credited back to the organization when an admin cancels the event, by how
 // far ahead of the start the cancellation happens. The rest compensates the hired ushers.
 export const CANCELLATION_TIERS = [
@@ -20,11 +23,25 @@ export const CANCELLATION_TIERS = [
 ];
 export const TRUSTED_MIN_PAID_EVENTS = 3;
 export const PAY_AFTER_OVERDUE_DAYS = 7;
-export const LOST_DISPUTE_LOOKBACK_DAYS = 90;
 
 export const PAYABLE_ATTENDANCE = ['present', 'late'];
 
 export const perUsherGrossCents = (budget) => calculateSettlementLineAmounts(budget).grossAmountCents;
+
+// Calendar days an event runs; an overnight event that ends before 24 hours counts as one day.
+export const eventDayCount = (event) => {
+  const startsAt = eventStartsAt(event);
+  const endsAt = eventEndsAt(event);
+  if (!startsAt || !endsAt) return 1;
+  return Math.max(1, Math.ceil((endsAt.getTime() - startsAt.getTime()) / DAY_MS));
+};
+
+export const minimumBudget = (event) => MIN_PAY_PER_DAY_EGP * eventDayCount(event);
+
+export const releaseDueAt = (event) => {
+  const endsAt = eventEndsAt(event);
+  return endsAt ? new Date(endsAt.getTime() + RELEASE_AFTER_END_HOURS * HOUR_MS) : null;
+};
 
 export const fundingRequiredCents = (event) => {
   const hiredCount = (event.hiredTalents || []).length;
@@ -94,32 +111,45 @@ export const planCancellation = ({ fundedCents, hiredTalentIds, perUsherCents, r
   };
 };
 
-// Decides how held funding is paid out after the event. Every hired usher must have an
-// attendance mark (or `unmarkedAs` decides it), and the funding must cover the whole team.
-export const planRelease = ({ hiredTalentIds, attendanceByTalent, perUsherCents, fundedCents, unmarkedAs = null }) => {
+// Decides how held funding is paid out after the event. Attendance is final by then: anyone
+// without a present or late record did not check in. The platform fee is earned for every booked
+// usher, so a no-show returns only their wage; skipping check-in therefore saves nothing.
+export const planRelease = ({ hiredTalentIds, attendanceByTalent, perUsherCents, fundedCents }) => {
   const ushers = [...new Set(hiredTalentIds || [])];
   const payable = [];
-  const absent = [];
-  const unmarked = [];
+  const noShows = [];
   for (const talentId of ushers) {
-    const attendance = attendanceByTalent.get(talentId);
-    const status = attendance?.status || unmarkedAs;
+    const status = attendanceByTalent.get(talentId)?.status;
     if (PAYABLE_ATTENDANCE.includes(status)) payable.push({ talentId, attendanceStatus: status, ...splitPlatformFee(perUsherCents) });
-    else if (status === 'absent') absent.push({ talentId, amountCents: perUsherCents });
-    else unmarked.push(talentId);
+    else {
+      const { platformFeeCents, usherAmountCents } = splitPlatformFee(perUsherCents);
+      noShows.push({ talentId, feeCents: platformFeeCents, wageCents: usherAmountCents });
+    }
   }
-  const requiredCents = ushers.length * perUsherCents;
+  const hiredCents = ushers.length * perUsherCents;
+  const noShowFeeCents = noShows.reduce((total, line) => total + line.feeCents, 0);
+  const noShowWageCents = noShows.reduce((total, line) => total + line.wageCents, 0);
+  const surplusCents = Math.max(0, fundedCents - hiredCents);
   const blockers = [];
-  if (unmarked.length) blockers.push({ code: 'unmarked_attendance', talentIds: unmarked });
-  if (fundedCents < requiredCents) blockers.push({ code: 'underfunded', shortfallCents: requiredCents - fundedCents });
+  if (fundedCents < hiredCents) blockers.push({ code: 'underfunded', shortfallCents: hiredCents - fundedCents });
   return {
     payable,
-    absent,
-    unmarked,
+    noShows,
     blockers,
-    requiredCents,
-    surplusCents: Math.max(0, fundedCents - requiredCents),
+    requiredCents: hiredCents,
+    noShowFeeCents,
+    noShowWageCents,
+    surplusCents,
+    returnCents: noShowWageCents + surplusCents,
   };
+};
+
+// Bookings the funding does not cover once the deadline passes, latest hires first.
+export const planUnfundedSeatDrops = ({ hiredTalentIds, perUsherCents, fundedCents }) => {
+  const ushers = [...new Set(hiredTalentIds || [])];
+  if (perUsherCents <= 0) return [];
+  const fundedSeats = Math.max(0, Math.floor(fundedCents / perUsherCents));
+  return ushers.slice(fundedSeats);
 };
 
 export const payAfterOverdueAt = (event) => {
@@ -127,14 +157,11 @@ export const payAfterOverdueAt = (event) => {
   return endsAt ? new Date(endsAt.getTime() + PAY_AFTER_OVERDUE_DAYS * DAY_MS) : null;
 };
 
-export const lostDisputeSince = (now = new Date()) => new Date(now.getTime() - LOST_DISPUTE_LOOKBACK_DAYS * DAY_MS);
-
 // Trusted organizations may pay after the event. An admin override always wins.
-export const evaluateTier = ({ override = null, paidEventsCount, overdueEventsCount, lostDisputesCount, creditBalanceCents }) => {
+export const evaluateTier = ({ override = null, paidEventsCount, overdueEventsCount, creditBalanceCents }) => {
   const reasons = [];
   if (paidEventsCount < TRUSTED_MIN_PAID_EVENTS) reasons.push('not_enough_paid_events');
   if (overdueEventsCount > 0) reasons.push('overdue_payment');
-  if (lostDisputesCount > 0) reasons.push('lost_attendance_dispute');
   if (creditBalanceCents < 0) reasons.push('negative_credit_balance');
   const automaticTier = reasons.length ? 'standard' : 'trusted';
   return {
@@ -145,6 +172,5 @@ export const evaluateTier = ({ override = null, paidEventsCount, overdueEventsCo
     paidEventsCount,
     requiredPaidEvents: TRUSTED_MIN_PAID_EVENTS,
     overdueEventsCount,
-    lostDisputesCount,
   };
 };

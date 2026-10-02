@@ -1,22 +1,24 @@
 import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
-import { User, Event, Application, Attendance, Review, Referral, EventSettlement, SettlementLine, AbsenceHold } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral } from '../../db/index.js';
 import { FundingService } from '../services/funding.service.js';
-import { AbsenceHoldService } from '../services/absence-hold.service.js';
+import { MIN_PAY_PER_DAY_EGP, minimumBudget } from '../services/funding-policy.js';
+import { AttendanceService } from '../services/attendance.service.js';
+import { EventAutomationService } from '../services/event-automation.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { CloudinaryService } from '../utils/cloudinary.js';
 import { UploadFolders } from '../utils/uploadFolders.js';
 import { ApiFeature } from '../utils/apiFeature.js';
-import { checkAndAutoVerify } from './usher.controller.js';
+import { checkAndAutoVerify, refreshTalentRating } from '../services/talent-stats.service.js';
 import { getMissingProfileFields, isProfileComplete } from '../utils/profileCompletion.js';
 import { publicTalent, SECRET_USER_FIELDS, talentForOrganization } from '../utils/publicTalent.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
-import { updateApplicationDecision } from '../services/application-decision.service.js';
+import { maxStandbyCount, updateApplicationDecision } from '../services/application-decision.service.js';
+import { StandbyService } from '../services/standby.service.js';
 import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
-import { attendanceQrResponse } from '../utils/attendanceQr.js';
 import { eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
 import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields } from '../utils/eventEditing.js';
 
@@ -38,13 +40,19 @@ const scheduleSnapshot = (event) => ({
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
 
-const hasStartedPayment = async (eventId, talentId) => {
-    const lines = await SettlementLine.findAll({ where: { eventId, talentId }, attributes: ['settlementId'] });
-    if (!lines.length) return false;
-    const started = await EventSettlement.count({
-        where: { id: { [Op.in]: lines.map((line) => line.settlementId) }, collectionStatus: { [Op.ne]: 'failed' } },
-    });
-    return started > 0;
+const standbyLimitError = (requiredCount) => new AppError(
+    `Standby can be at most half the staff count (${maxStandbyCount(requiredCount)} for ${requiredCount} ushers)`, 400,
+);
+
+const APPLICATION_DECISION_NOTICES = {
+    accepted: (title) => ({ title: 'Application accepted', message: `Your application to “${title}” was accepted.`, type: 'success' }),
+    standby: (title) => ({
+        title: 'Added to standby',
+        message: `You’re on standby for “${title}”. If a spot opens before the event starts, you’ll be moved in automatically and notified.`,
+        type: 'info',
+    }),
+    rejected: (title) => ({ title: 'Application declined', message: `Your application to “${title}” was not selected.`, type: 'danger' }),
+    removedFromStandby: (title) => ({ title: 'Removed from standby', message: `You were removed from the standby list for “${title}”.`, type: 'info' }),
 };
 
 export class OrganizerController {
@@ -166,6 +174,7 @@ export class OrganizerController {
 
     // US-200: Get organizer dashboard stats
     static async getDashboard(req, res, next) {
+        await EventAutomationService.sweepQuietly({ organizerId: getOrganizerId(req.authUser) });
         const organizerId = getOrganizerId(req.authUser);
 
         // Read the small set of fields needed for totals once. Four separate
@@ -213,24 +222,31 @@ export class OrganizerController {
         const organizerId = getOrganizerId(req.authUser);
         const {
             title, category, eventDate, applicationDeadline,
-            startTime, endTime, location, requiredCount,
+            startTime, endTime, location, requiredCount, standbyCount = 0,
             gatheringLocation, genderPreference, specifyGenders,
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
+            venueLatitude, venueLongitude,
         } = req.body;
 
         if (specifyGenders && Number(malesCount || 0) + Number(femalesCount || 0) !== Number(requiredCount)) {
             return next(new AppError('Male and female counts must add up to the required staff count', 400));
         }
+        if (Number(standbyCount) > maxStandbyCount(requiredCount)) return next(standbyLimitError(requiredCount));
         if (startTime >= endTime) return next(new AppError('End time must be after start time', 400));
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
         if (new Date(eventDate) < startOfToday) return next(new AppError('Event date cannot be in the past', 400));
+        const minimumPay = minimumBudget({ eventDate, startTime, endTime });
+        if (Number(budget) < minimumPay) {
+            return next(new AppError(`Pay must be at least ${minimumPay} EGP per usher (${MIN_PAY_PER_DAY_EGP} EGP for each event day)`, 400));
+        }
 
         const event = await Event.create({
             organizerId, title, category: normalizeEventCategory(category), eventDate, applicationDeadline,
-            startTime, endTime, location, gatheringLocation, requiredCount,
+            startTime, endTime, location, gatheringLocation, requiredCount, standbyCount: Number(standbyCount) || 0,
             genderPreference: genderPreference || 'any', specifyGenders: Boolean(specifyGenders),
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
+            venueLatitude: venueLatitude ?? null, venueLongitude: venueLongitude ?? null,
             status: 'open', hiredTalents: [], supervisorIds: [],
         });
 
@@ -243,6 +259,7 @@ export class OrganizerController {
 
     // US-200: Get own events (with optional status filter + ApiFeature pagination)
     static async getMyEvents(req, res, next) {
+        await EventAutomationService.sweepQuietly({ organizerId: getOrganizerId(req.authUser) });
         const organizerId = getOrganizerId(req.authUser);
         const { status } = req.query;
 
@@ -271,6 +288,7 @@ export class OrganizerController {
         const { id } = req.params;
         const organizerId = getOrganizerId(req.authUser);
 
+        await EventAutomationService.sweepQuietly({ organizerId });
         const event = await Event.findOne({ where: { id, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
 
@@ -281,46 +299,28 @@ export class OrganizerController {
         });
     }
 
-    static async generateAttendanceQr(req, res, next) {
-        const organizerId = getOrganizerId(req.authUser);
-        const event = await sequelize.transaction(async (transaction) => {
-            const lockedEvent = await Event.findOne({
-                where: { id: req.params.id, organizerId },
-                transaction,
-                lock: transaction.LOCK.UPDATE,
-            });
-            if (!lockedEvent) throw new AppError(messages.event.notfound, 404);
-            if (lockedEvent.status !== 'open') {
-                throw new AppError('Attendance QR can only be generated while the event is open', 409);
-            }
-            if (lockedEvent.attendanceQrCreatedAt) {
-                throw new AppError('An attendance QR has already been generated for this event', 409);
-            }
-
-            lockedEvent.attendanceQrCreatedAt = new Date();
-            await lockedEvent.save({ transaction });
-            return lockedEvent;
-        });
-
-        return res.status(201).json({
-            success: true,
-            message: 'Attendance QR generated successfully',
-            data: attendanceQrResponse(event),
-        });
+    static async listCheckInPoints(req, res, next) {
+        const event = await Event.findOne({ where: { id: req.params.id, organizerId: getOrganizerId(req.authUser) } });
+        if (!event) return next(new AppError(messages.event.notfound, 404));
+        return res.status(200).json({ success: true, data: await AttendanceService.listPoints(event) });
     }
 
-    static async getAttendanceQr(req, res, next) {
-        const organizerId = getOrganizerId(req.authUser);
-        const event = await Event.findOne({ where: { id: req.params.id, organizerId } });
+    // The staff check-in screen calls this every few seconds with the phone's location and
+    // receives the current QR and 6-digit code.
+    static async openCheckInPoint(req, res, next) {
+        const event = await Event.findOne({ where: { id: req.params.id, organizerId: getOrganizerId(req.authUser) } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
-        if (!event.attendanceQrCreatedAt) {
-            return next(new AppError('Attendance QR has not been generated for this event', 404));
-        }
-
-        return res.status(200).json({
-            success: true,
-            data: attendanceQrResponse(event),
+        const data = await AttendanceService.openPoint({
+            event, staffUser: req.authUser, location: req.body.location, label: req.body.label,
         });
+        return res.status(200).json({ success: true, data });
+    }
+
+    static async closeCheckInPoint(req, res, next) {
+        const event = await Event.findOne({ where: { id: req.params.id, organizerId: getOrganizerId(req.authUser) } });
+        if (!event) return next(new AppError(messages.event.notfound, 404));
+        await AttendanceService.closePoint({ event, staffUser: req.authUser });
+        return res.status(200).json({ success: true, message: 'Check-in point closed' });
     }
 
     // Update event details
@@ -362,6 +362,10 @@ export class OrganizerController {
             return next(new AppError('Application deadline must be before the event date', 400));
         }
         if (event.startTime >= event.endTime) return next(new AppError('End time must be after start time', 400));
+        if (['budget', 'eventDate', 'startTime', 'endTime'].some((field) => changed.includes(field))
+            && Number(event.budget) < minimumBudget(event)) {
+            return next(new AppError(`Pay must be at least ${minimumBudget(event)} EGP per usher (${MIN_PAY_PER_DAY_EGP} EGP for each event day)`, 400));
+        }
         if (changed.includes('eventDate')) {
             const startOfToday = new Date();
             startOfToday.setHours(0, 0, 0, 0);
@@ -369,6 +373,13 @@ export class OrganizerController {
         }
         if (Number(event.requiredCount) < (event.hiredTalents?.length || 0)) {
             return next(new AppError('Required staff count cannot be lower than the number already hired', 409));
+        }
+        if (Number(event.standbyCount || 0) > maxStandbyCount(event.requiredCount)) return next(standbyLimitError(event.requiredCount));
+        if (changed.includes('standbyCount')) {
+            const onStandby = await Application.count({ where: { eventId: event.id, status: 'standby' } });
+            if (Number(event.standbyCount) < onStandby) {
+                return next(new AppError(`Standby count cannot be lower than the ${onStandby} usher(s) already on standby`, 409));
+            }
         }
         const hiredTalents = event.hiredTalents || [];
         const scheduleAfter = scheduleSnapshot(event);
@@ -388,6 +399,8 @@ export class OrganizerController {
             }
         }
         await event.save();
+        // A larger team is filled from standby first.
+        if (changed.includes('requiredCount')) await StandbyService.fillOpenSpotsQuietly(event.id);
 
         if (changedScheduleFields.length && hiredTalents.length) {
             await Promise.all(hiredTalents.map((userId) => NotificationService.create({
@@ -460,7 +473,7 @@ export class OrganizerController {
         });
 
         const enriched = await Promise.all(applications.map(async (app) => {
-            const talent = talentForOrganization(await User.findByPk(app.talentId));
+            const talent = talentForOrganization(await User.findByPk(app.talentId), { booked: app.status === 'accepted' });
             let referredByName = null;
             if (app.referredBy) {
                 const referrer = await User.findByPk(app.referredBy, { attributes: ['fullName'] });
@@ -482,7 +495,7 @@ export class OrganizerController {
         const { status } = req.body;
         const organizerId = getOrganizerId(req.authUser);
 
-        const { application, event } = await sequelize.transaction(async (transaction) => {
+        const { application, event, outcome, previousStatus } = await sequelize.transaction(async (transaction) => {
             const lockedApplication = await Application.findByPk(applicationId, {
                 transaction,
                 lock: transaction.LOCK.UPDATE,
@@ -502,119 +515,71 @@ export class OrganizerController {
             if (['cancelled', 'completed'].includes(lockedEvent.status)) {
                 throw new AppError(`Applications for a ${lockedEvent.status} event can no longer change`, 409);
             }
-            if (lockedApplication.status === 'excused') {
-                throw new AppError('This usher excused themselves from the event', 409);
+            if (['excused', 'withdrawn'].includes(lockedApplication.status)) {
+                throw new AppError(lockedApplication.status === 'excused'
+                    ? 'This usher excused themselves from the event'
+                    : 'This usher left the standby list', 409);
             }
             if (hasEventStarted(lockedEvent)) {
                 throw new AppError('The event has started; record attendance instead of changing applications', 409);
             }
-            if (status === 'accepted' && (!talent || talent.isBlocked)) {
+            const booking = status === 'accepted' || status === 'standby';
+            if (booking && (!talent || talent.isBlocked)) {
                 throw new AppError('This usher can no longer be booked', 409);
             }
-            if (lockedApplication.isDirect && lockedApplication.status === 'pending' && status === 'accepted') {
+            if (booking && talent.suspendedUntil && new Date(talent.suspendedUntil) > new Date()) {
+                throw new AppError('This usher is suspended from new bookings after missed check-ins', 409);
+            }
+            if (lockedApplication.isDirect && lockedApplication.status === 'pending' && booking) {
                 throw new AppError('This booking invitation is waiting for the usher to accept it', 409);
             }
 
-            await updateApplicationDecision({
+            const previous = lockedApplication.status;
+            const result = await updateApplicationDecision({
                 application: lockedApplication,
                 event: lockedEvent,
                 status,
                 transaction,
+                // Accepting into a full event puts an usher who agreed to standby on the list.
+                overflowToStandby: true,
             });
-            return { application: lockedApplication, event: lockedEvent };
+            return { application: lockedApplication, event: lockedEvent, outcome: result, previousStatus: previous };
         });
 
+        const notice = outcome === 'rejected' && previousStatus === 'standby' ? 'removedFromStandby' : outcome;
         await NotificationService.create({
             userId: application.talentId,
-            title: status === 'accepted' ? 'Application accepted' : 'Application declined',
-            message: `Your application to “${event.title}” was ${status === 'accepted' ? 'accepted' : 'not selected'}.`,
-            type: status === 'accepted' ? 'success' : 'danger',
+            ...APPLICATION_DECISION_NOTICES[notice](event.title),
             link: `/talent/jobs/${event.id}`,
         });
+        // Removing a hired usher opens a spot for the standby list.
+        if (previousStatus === 'accepted' && outcome === 'rejected') await StandbyService.fillOpenSpotsQuietly(event.id);
 
+        const overflowed = status === 'accepted' && outcome === 'standby';
         return res.status(200).json({
             success: true,
-            message: `Application ${status} successfully`,
+            message: overflowed
+                ? 'The event is fully staffed, so this usher was added to standby'
+                : `Application ${outcome === 'standby' ? 'moved to standby' : outcome} successfully`,
             data: application,
         });
     }
 
-    // US-207: Mark attendance
+    // US-207: Staff check-in for an usher whose phone cannot check in. Present or late only: a
+    // missed check-in becomes absent automatically, so nobody can be marked absent by hand.
     static async markAttendance(req, res, next) {
-        const { id } = req.params; // eventId
-        const { talentId, status, checkInTime } = req.body;
-        const organizerId = getOrganizerId(req.authUser);
-
-        const event = await Event.findOne({ where: { id, organizerId } });
+        const event = await Event.findOne({ where: { id: req.params.id, organizerId: getOrganizerId(req.authUser) } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
-
-        // The organization can record attendance at any time, except for a cancelled event.
-        if (event.status === 'cancelled') return next(new AppError('Attendance cannot be recorded for a cancelled event', 409));
-
-        if (!event.hiredTalents.includes(talentId)) {
-            return next(new AppError('Talent is not hired for this event', 400));
-        }
-        // Absent ushers are left out of payment, so the mark cannot follow a started payment.
-        if (status === 'absent' && await hasStartedPayment(id, talentId)) {
-            return next(new AppError('Payment for this usher has already started, so they cannot be marked absent', 409));
-        }
-
-        const previousAttendance = await Attendance.findOne({ where: { eventId: id, talentId } });
-        const previousStatus = previousAttendance?.status;
-        // A QR scan is the usher's own proof of arrival, so the organization cannot replace it.
-        if (status === 'absent' && previousAttendance?.checkInMethod === 'qr' && ['present', 'late'].includes(previousStatus)) {
-            return next(new AppError('This usher checked in with the event QR code, so they cannot be marked absent', 409));
-        }
-
-        // After a prefunded event's payments are released, an absent usher's pay is held for the
-        // dispute window. Correcting the mark sends that held pay to the usher.
-        if (event.fundsReleasedAt && ['present', 'late'].includes(status) && previousStatus === 'absent') {
-            const hold = await AbsenceHold.findOne({ where: { eventId: id, talentId } });
-            if (!hold) return next(new AppError('This event’s payments were already released', 409));
-            if (hold.status === 'returned_to_organizer') {
-                return next(new AppError('This usher’s held pay already returned to your credit. Contact support to pay them.', 409));
-            }
-            if (['held', 'disputed'].includes(hold.status)) {
-                await AbsenceHoldService.payToUsher({ hold, resolution: 'organizer_corrected', actorId: req.authUser.id, attendanceStatus: status });
-            }
-        } else if (event.fundsReleasedAt && !previousAttendance) {
-            return next(new AppError('This event’s payments were already released', 409));
-        }
-        const [attendance, created] = await Attendance.findOrCreate({
-            where: { eventId: id, talentId },
-            defaults: { status, checkInTime: checkInTime || null },
+        const attendance = await AttendanceService.staffCheckIn({
+            event,
+            talentId: req.body.talentId,
+            status: req.body.status,
+            staffUser: req.authUser,
+            location: req.body.location,
         });
-
-        if (!created) {
-            attendance.status = status;
-            if (checkInTime) attendance.checkInTime = checkInTime;
-            await attendance.save();
-        }
-
-        // Update talent consecutive good events counter (BR-07)
-        const talent = await User.findByPk(talentId);
-        if (talent) {
-            const isGood = status === 'present' || status === 'late';
-            const wasGood = previousStatus === 'present' || previousStatus === 'late';
-            if (isGood && (created || !wasGood)) {
-                talent.consecutiveGoodEvents = (talent.consecutiveGoodEvents || 0) + 1;
-                // Reset late excuse counter after 5 consecutive good events (BR-06, FR-EXC-08)
-                if (talent.consecutiveGoodEvents >= 5) {
-                    talent.lateExcuseCount = 0;
-                    talent.consecutiveGoodEvents = 0;
-                }
-            } else if (status === 'absent') {
-                talent.consecutiveGoodEvents = 0;
-            }
-            await talent.save();
-        }
-
-        // Check if talent should be auto-verified (FR-VER-01)
-        await checkAndAutoVerify(talentId);
-
         return res.status(200).json({
             success: true,
-            message: 'Attendance marked successfully',
+            message: 'Usher checked in',
             data: attendance,
         });
     }
@@ -622,8 +587,9 @@ export class OrganizerController {
     static async getEventAttendance(req, res, next) {
         const { id } = req.params;
         const organizerId = getOrganizerId(req.authUser);
-        const event = await Event.findOne({ where: { id, organizerId } });
-        if (!event) return next(new AppError(messages.event.notfound, 404));
+        const found = await Event.findOne({ where: { id, organizerId } });
+        if (!found) return next(new AppError(messages.event.notfound, 404));
+        await EventAutomationService.sweepQuietly({ eventIds: [found.id] });
 
         const records = await Attendance.findAll({
             where: { eventId: id },
@@ -670,15 +636,8 @@ export class OrganizerController {
             eventId: id, reviewerId: organizerId, reviewedUserId: talentId, rating, comment: comment || null,
         });
 
-        // Recalculate talent's average rating
-        const talent = await User.findByPk(talentId);
-        if (talent) {
-            const allReviews = await Review.findAll({ where: { reviewedUserId: talentId } });
-            const avg = allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length;
-            talent.rate = Math.round(avg * 10) / 10;
-            talent.totalRatings = allReviews.length;
-            await talent.save();
-        }
+        // Repeat reviews from the same organization count less toward the rating.
+        await refreshTalentRating(talentId);
 
         // Check auto-verify after new review updates rating (FR-VER-01)
         await checkAndAutoVerify(talentId);
@@ -749,17 +708,28 @@ export class OrganizerController {
 
     // US-211: Direct book a talent
     static async directBookTalent(req, res, next) {
-        const { talentId, eventId } = req.body;
+        const { talentId, eventId, asStandby = false } = req.body;
         const organizerId = getOrganizerId(req.authUser);
 
         const event = await Event.findOne({ where: { id: eventId, organizerId } });
         if (!event) return next(new AppError(messages.event.notfound, 404));
-        if (event.status !== 'open') return next(new AppError('Event is not open for bookings', 400));
+        // Standby is filled up to the start, so standby invitations also work after hiring closes.
+        const invitable = asStandby ? ['open', 'confirmed'].includes(event.status) && !hasEventStarted(event) : event.status === 'open';
+        if (!invitable) return next(new AppError('Event is not open for bookings', 400));
+        if (asStandby) {
+            const onStandby = await Application.count({ where: { eventId, status: 'standby' } });
+            if (onStandby >= Number(event.standbyCount || 0)) {
+                return next(new AppError(event.standbyCount ? 'The standby list for this event is full' : 'This event has no standby spots', 409));
+            }
+        }
 
         const talent = await User.findOne({ where: { id: talentId, role: 'usher', isBlocked: false } });
         if (!talent) return next(new AppError(messages.user.notfound, 404));
         if (!isProfileComplete(talent)) {
             return next(new AppError('This usher must complete their profile before they can be booked', 409));
+        }
+        if (talent.suspendedUntil && new Date(talent.suspendedUntil) > new Date()) {
+            return next(new AppError('This usher is suspended from new bookings after missed check-ins', 409));
         }
 
         // Prevent duplicate (BR-01)
@@ -768,20 +738,22 @@ export class OrganizerController {
 
         // A direct booking is an invitation and remains pending until the usher accepts it.
         const application = await Application.create({
-            eventId, talentId, status: 'pending', isDirect: true, appliedAt: new Date(),
+            eventId, talentId, status: 'pending', isDirect: true, standbyInvite: Boolean(asStandby), appliedAt: new Date(),
         });
 
         await NotificationService.create({
             userId: talentId,
-            title: 'New booking invitation',
-            message: `${req.authUser.fullName} invited you to work at “${event.title}”.`,
+            title: asStandby ? 'New standby invitation' : 'New booking invitation',
+            message: asStandby
+                ? `${req.authUser.fullName} invited you to be on standby for “${event.title}”. Standby is unpaid unless a spot opens and you’re moved in.`
+                : `${req.authUser.fullName} invited you to work at “${event.title}”.`,
             type: 'success',
             link: `/talent/jobs/${event.id}`,
         });
 
         return res.status(201).json({
             success: true,
-            message: 'Booking invitation sent to usher',
+            message: asStandby ? 'Standby invitation sent to usher' : 'Booking invitation sent to usher',
             data: application,
         });
     }

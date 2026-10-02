@@ -8,7 +8,9 @@ import { NotificationService } from '../services/notification.service.js';
 import { LATE_EXCUSE_LIMIT } from '../services/application-decision.service.js';
 
 const organizerIdFor = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
-const bookable = (talent) => talent?.role === 'usher' && !talent.isBlocked && isProfileComplete(talent);
+// Ushers suspended for missed check-ins cannot be booked, so they are not invited either.
+const bookable = (talent) => talent?.role === 'usher' && !talent.isBlocked && isProfileComplete(talent)
+  && !(talent.suspendedUntil && new Date(talent.suspendedUntil) > new Date());
 const canRebook = (talent) => bookable(talent) && (talent.lateExcuseCount || 0) < LATE_EXCUSE_LIMIT;
 
 async function lastTeamFor(event, transaction) {
@@ -92,7 +94,7 @@ export class OrganizationTalentController {
       if (!source) throw new AppError('No previous team is available', 404);
 
       const pendingDirect = await Application.count({
-        where: { eventId: event.id, isDirect: true, status: 'pending' }, transaction,
+        where: { eventId: event.id, isDirect: true, standbyInvite: false, status: 'pending' }, transaction,
       });
       let slots = Math.max(0, event.requiredCount - (event.hiredTalents || []).length - pendingDirect);
       const invited = [];

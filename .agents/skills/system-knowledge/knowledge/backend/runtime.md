@@ -3,7 +3,9 @@
 ## Current behavior
 Node ES modules, Express 5, Sequelize/PostgreSQL. index.js sets security/CORS/server entry; src/initapp.js validates configuration, connects DB, mounts routes/docs/health/errors. db/connection.js initializes models; db/migrate.js upgrades existing PostgreSQL schema.
 
-Aliases /usher and /talent share a router; /organizer and /provider share a router. Other prefixes: /auth, /admin, /notifications, /payments. /health reports server/database state; /docs/openapi.json exposes generated OpenAPI.
+Aliases /usher and /talent share a router; /organizer and /provider share a router. Other prefixes: /auth, /admin, /notifications, /payments. /health reports server/database state; /docs/openapi.json exposes generated OpenAPI. GET /internal/cron/event-automation runs the event automation sweep when called with `Authorization: Bearer` and the `CRON_SECRET` value (disabled without the variable); `vercel.json` schedules it daily, and the same steps also run lazily on reads, so a more frequent schedule only shortens delays.
+
+GET /internal/cron/event-reminders independently emails hired ushers during the 24 hours before their event starts. It uses the same `CRON_SECRET` bearer authentication. Because Vercel Hobby allows daily crons only, `vercel.json` runs it once a day as a fallback and `.github/workflows/event-reminders.yml` triggers it every 15 minutes using the `STAGING_`/`PRODUCTION_` `API_URL` and `CRON_SECRET` repository secrets (unconfigured environments are skipped). Its response reports checked/sent counts, recipient failures, or an email-configuration skip reason. Configure `EMAIL_USER`, `EMAIL_PASS`, and `FRONTEND_URL` for delivery. Scheduler and SMTP delays mean timing is approximate. See [notifications](notifications.md) for retry and delivery-history behavior.
 
 List sorting (`?sort=`) ignores malformed field names and secret or contact fields. Optional `APP_TIMEZONE` (default Africa/Cairo) sets the zone for event schedules.
 
