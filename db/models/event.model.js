@@ -1,6 +1,7 @@
 import { DataTypes } from 'sequelize';
 import { sequelize } from '../connection.js';
 import { eventStatus, genderPreference, eventCategories } from '../../src/utils/constant/enums.js';
+import { eventDays } from '../../src/utils/eventSchedule.js';
 
 export const Event = sequelize.define(
   'Event',
@@ -26,9 +27,22 @@ export const Event = sequelize.define(
       type: DataTypes.ENUM(...Object.values(eventCategories)),
       allowNull: false,
     },
+    // First day of the event. eventDate, startTime, and endTime mirror the first entry of `days`.
     eventDate: {
       type: DataTypes.DATE,
       allowNull: false,
+    },
+    // Last day of the event; null on events created before multi-day support (same as eventDate).
+    endDate: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    // Each day the event runs with its own hours: [{ date: 'YYYY-MM-DD', startTime, endTime }].
+    // Empty on events created before multi-day support, which run on eventDate only.
+    days: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
     },
     applicationDeadline: {
       type: DataTypes.DATE,
@@ -89,6 +103,7 @@ export const Event = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    // Pay per usher for each event day; an usher's full pay is budget × number of days.
     budget: {
       type: DataTypes.FLOAT,
       allowNull: false,
@@ -167,6 +182,9 @@ Event.prototype.toJSON = function () {
   const values = { ...this.get() };
   values._id = values.id;
   values.providerId = values.organizerId;
+  values.days = eventDays(values);
+  values.dayCount = values.days.length;
+  values.endDate = values.endDate || values.eventDate;
   if (values.photo && typeof values.photo === 'object') {
     values.photo = values.photo.secure_url || values.photo.url || values.photo;
   }

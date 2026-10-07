@@ -19,7 +19,9 @@ import {
   RELEASE_AFTER_END_HOURS,
   cancellationRefundPercent,
   fundingDeadline,
+  eventDayCount,
   paymentProtection,
+  perUsherDayCents,
   perUsherGrossCents,
   planCancellation,
   planRelease,
@@ -50,6 +52,13 @@ const releaseBlockerMessage = (blockers) => blockers
 
 // Attendance becomes final when check-in closes; payments can be released from then on.
 export const attendanceIsFinal = (event, now = new Date()) => now > checkInWindow(event).closesAt;
+
+// Each usher's attendance records, one per event day.
+const attendanceByTalentOf = (records) => {
+  const byTalent = new Map();
+  records.forEach((record) => byTalent.set(record.talentId, [...(byTalent.get(record.talentId) || []), record]));
+  return byTalent;
+};
 
 export class FundingService {
   static async fundingsFor(eventId, { transaction } = {}) {
@@ -97,7 +106,7 @@ export class FundingService {
       const before = summarizeFunding(locked, await this.fundingsFor(locked.id, { transaction }));
       const seats = (locked.hiredTalents || []).length + extraSeats;
       if (seats > locked.requiredCount) throw new AppError(`This event needs ${locked.requiredCount} ushers at most`, 409);
-      const due = Math.max(0, seats * perUsherGrossCents(locked.budget) - before.fundedCents);
+      const due = Math.max(0, seats * perUsherGrossCents(locked) - before.fundedCents);
 
       const active = before.pendingCheckout;
       if (active) {
@@ -306,8 +315,9 @@ export class FundingService {
       ]);
       const plan = planRelease({
         hiredTalentIds: hired,
-        attendanceByTalent: new Map(attendance.map((record) => [record.talentId, record])),
-        perUsherCents: perUsherGrossCents(locked.budget),
+        attendanceByTalent: attendanceByTalentOf(attendance),
+        perUsherCents: perUsherDayCents(locked),
+        dayCount: eventDayCount(locked),
         fundedCents: summary.fundedCents,
       });
       if (plan.blockers.length) {
@@ -364,7 +374,7 @@ export class FundingService {
     await notifySafely({
       userId: event.organizerId,
       title: 'Event payments released',
-      message: `Payments for “${event.title}” were released to ${plan.payable.length} usher(s).${plan.noShows.length ? ` ${plan.noShows.length} booked usher(s) did not check in; their wages were returned and the booking fee was kept.` : ''}${returned ? ` ${egp(returned)} EGP is being returned to the card that paid (any part paid from credit returns to credit).` : ''}`,
+      message: `Payments for “${event.title}” were released to ${plan.payable.length} usher(s).${plan.noShows.length ? ` ${plan.noShows.length} booked usher(s) missed check-in${eventDayCount(event) > 1 ? ' on at least one day' : ''}; the wages for missed days were returned and the booking fee was kept.` : ''}${returned ? ` ${egp(returned)} EGP is being returned to the card that paid (any part paid from credit returns to credit).` : ''}`,
       type: 'success',
       link: `/provider/events/${event.id}`,
     });
@@ -388,7 +398,7 @@ export class FundingService {
       if (summary.shortfallCents <= 0) return null;
       const dropped = planUnfundedSeatDrops({
         hiredTalentIds: locked.hiredTalents,
-        perUsherCents: perUsherGrossCents(locked.budget),
+        perUsherCents: perUsherGrossCents(locked),
         fundedCents: summary.fundedCents,
       });
       if (!dropped.length) return null;
@@ -428,7 +438,7 @@ export class FundingService {
     const plan = planCancellation({
       fundedCents: summary.fundedCents,
       hiredTalentIds: event.hiredTalents,
-      perUsherCents: perUsherGrossCents(event.budget),
+      perUsherCents: perUsherGrossCents(event),
       refundPercent,
     });
     let settlement = null;
@@ -507,13 +517,16 @@ export class FundingService {
       EventSettlement.findAll({ where: { eventId: event.id, fundingSource: 'prefund' }, order: [['createdAt', 'ASC']] }),
       FundingRefundService.listForEvent(event.id),
     ]);
-    const perUsherCents = perUsherGrossCents(event.budget);
+    const perUsherCents = perUsherGrossCents(event);
+    const dayCount = eventDayCount(event);
     let releasePreview = null;
     if (includeRelease && event.fundingMode === 'prefund' && !event.fundsReleasedAt && event.status !== 'cancelled') {
       const hired = [...new Set(event.hiredTalents || [])];
       const attendance = hired.length ? await Attendance.findAll({ where: { eventId: event.id, talentId: { [Op.in]: hired } } }) : [];
-      const attendanceByTalent = new Map(attendance.map((record) => [record.talentId, record]));
-      const plan = planRelease({ hiredTalentIds: hired, attendanceByTalent, perUsherCents, fundedCents: summary.fundedCents });
+      const attendanceByTalent = attendanceByTalentOf(attendance);
+      const plan = planRelease({
+        hiredTalentIds: hired, attendanceByTalent, perUsherCents: perUsherDayCents(event), dayCount, fundedCents: summary.fundedCents,
+      });
       const ushers = hired.length ? await User.findAll({ where: { id: { [Op.in]: hired } }, paranoid: false, attributes: ['id', 'fullName', 'portfolioPicture', 'paymentMethods'] }) : [];
       const usersById = new Map(ushers.map((user) => [user.id, user]));
       const describe = (talentId) => {
@@ -530,11 +543,13 @@ export class FundingService {
         canRelease: event.status === 'completed' && final && plan.blockers.length === 0,
         eventCompleted: event.status === 'completed',
         blockers: plan.blockers.map((blocker) => ({ ...blocker, shortfall: egp(blocker.shortfallCents) })),
-        payable: plan.payable.map((line) => ({ ...describe(line.talentId), attendanceStatus: line.attendanceStatus, usherAmount: egp(line.usherAmountCents), platformFee: egp(line.platformFeeCents), grossAmount: egp(line.grossAmountCents) })),
-        // Before check-in closes these ushers simply have not checked in yet.
+        payable: plan.payable.map((line) => ({ ...describe(line.talentId), attendanceStatus: line.attendanceStatus, attendedDays: line.attendedDays, usherAmount: egp(line.usherAmountCents), platformFee: egp(line.platformFeeCents), grossAmount: egp(line.grossAmountCents) })),
+        // Before check-in closes these ushers simply have not checked in yet. On a multi-day event
+        // an usher appears here for the days they missed and in `payable` for the days they worked.
         notCheckedIn: plan.noShows.map((line) => ({
           ...describe(line.talentId),
-          status: attendanceByTalent.get(line.talentId)?.status || null,
+          missedDays: line.missedDays,
+          status: (attendanceByTalent.get(line.talentId) || []).some((record) => record.status === 'absent') ? 'absent' : null,
           returnedWage: egp(line.wageCents),
           keptFee: egp(line.feeCents),
         })),
@@ -551,6 +566,8 @@ export class FundingService {
       tier,
       hiredCount: (event.hiredTalents || []).length,
       requiredCount: event.requiredCount,
+      dayCount,
+      perUsherDayAmount: egp(perUsherDayCents(event)),
       perUsherAmount: egp(perUsherCents),
       requiredAmount: egp(summary.requiredCents),
       fundedAmount: egp(summary.fundedCents),

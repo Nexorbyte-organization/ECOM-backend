@@ -5,23 +5,34 @@ import { EventReminder } from '../../db/models/event-reminder.model.js';
 import { User } from '../../db/models/user.model.js';
 import { EmailService } from '../utils/email.js';
 import { HtmlTemplateService } from '../utils/htmlTemplate.js';
-import { eventStartsAt, platformTimeZone } from '../utils/eventSchedule.js';
+import { dayStartsAt, eventDays, platformTimeZone } from '../utils/eventSchedule.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const reminderIsDue = (event, now) => {
-  if (!event || event.deletedAt || !['open', 'confirmed'].includes(event.status)) return false;
-  const start = eventStartsAt(event);
-  return Boolean(start && now < start && now.getTime() >= start.getTime() - DAY_MS);
+// The event day whose reminder is due at `now`: one that starts within the next 24 hours. Each day
+// of a multi-day event gets its own reminder.
+export const dueReminderDay = (event, now) => {
+  if (!event || event.deletedAt || !['open', 'confirmed'].includes(event.status)) return null;
+  const days = eventDays(event);
+  for (const [dayIndex, day] of days.entries()) {
+    const startsAt = dayStartsAt(day);
+    if (startsAt && !Number.isNaN(startsAt.getTime()) && now < startsAt && now.getTime() >= startsAt.getTime() - DAY_MS) {
+      return { dayIndex, dayCount: days.length, startsAt };
+    }
+  }
+  return null;
 };
+
+export const reminderIsDue = (event, now) => Boolean(dueReminderDay(event, now));
 
 export class EventReminderService {
   static async sendForUsher(eventId, userId, now = new Date()) {
     return sequelize.transaction(async (transaction) => {
       // Serialize concurrent cron deliveries and recheck current membership/status/schedule.
       const event = await Event.findByPk(eventId, { transaction, lock: transaction.LOCK.UPDATE });
-      if (!reminderIsDue(event, now) || !event.hiredTalents?.includes(userId)) return false;
-      const startsAt = eventStartsAt(event);
+      const due = dueReminderDay(event, now);
+      if (!due || !event.hiredTalents?.includes(userId)) return false;
+      const { startsAt } = due;
       const where = { eventId, userId, startsAt };
       if (await EventReminder.findOne({ where, transaction, paranoid: false })) return false;
       const user = await User.findByPk(userId, { attributes: ['email'], transaction });
@@ -31,9 +42,12 @@ export class EventReminderService {
       const startLabel = new Intl.DateTimeFormat('en-GB', {
         timeZone, dateStyle: 'full', timeStyle: 'short',
       }).format(startsAt);
-      const title = `Reminder: ${event.title} starts soon`;
+      const multiDay = due.dayCount > 1;
+      const title = multiDay ? `Reminder: day ${due.dayIndex + 1} of ${event.title} starts soon` : `Reminder: ${event.title} starts soon`;
       const message = [
-        `You are booked for ${event.title}. Your event starts within 24 hours.`,
+        multiDay
+          ? `You are booked for ${event.title}. Day ${due.dayIndex + 1} of ${due.dayCount} starts within 24 hours. Check in again when you arrive.`
+          : `You are booked for ${event.title}. Your event starts within 24 hours.`,
         `Start: ${startLabel} (${timeZone}).`,
         `Location: ${event.location}.`,
         event.gatheringLocation && `Meeting point: ${event.gatheringLocation}.`,
@@ -67,7 +81,12 @@ export class EventReminderService {
         attributes: ['id', 'hiredTalents'],
         where: {
           status: { [Op.in]: ['open', 'confirmed'] },
-          eventDate: { [Op.between]: [new Date(now.getTime() - DAY_MS), new Date(now.getTime() + 2 * DAY_MS)] },
+          // Events with a day in the window: from the first day until the last.
+          eventDate: { [Op.lte]: new Date(now.getTime() + 2 * DAY_MS) },
+          [Op.or]: [
+            { endDate: { [Op.gte]: new Date(now.getTime() - DAY_MS) } },
+            { endDate: null, eventDate: { [Op.gte]: new Date(now.getTime() - DAY_MS) } },
+          ],
           ...(afterId ? { id: { [Op.gt]: afterId } } : {}),
         },
         order: [['id', 'ASC']], limit: 100,

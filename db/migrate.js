@@ -81,6 +81,10 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLongitude" DOUBLE PRECISION`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "noShowFeeCents" INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "standbyCount" INTEGER NOT NULL DEFAULT 0`,
+      // Multi-day events. Existing events run on eventDate only.
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "days" JSONB NOT NULL DEFAULT '[]'::jsonb`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "endDate" TIMESTAMP WITH TIME ZONE`,
+      `UPDATE "events" SET "endDate" = "eventDate" WHERE "endDate" IS NULL`,
     ]);
   }
 
@@ -109,6 +113,26 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInLongitude" DOUBLE PRECISION`,
       `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInPointId" UUID`,
       `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "recordedBy" UUID`,
+      // Attendance is recorded per event day; existing records belong to the first day.
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "dayIndex" INTEGER NOT NULL DEFAULT 0`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT c.conname FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+           WHERE t.relname = 'attendances' AND c.contype = 'u'
+             AND pg_get_constraintdef(c.oid) = 'UNIQUE ("eventId", "talentId")'
+         LOOP EXECUTE format('ALTER TABLE "attendances" DROP CONSTRAINT %I', item.conname); END LOOP;
+       END $$`,
+      `DO $$ DECLARE item RECORD; BEGIN
+         FOR item IN SELECT i.relname AS index_name FROM pg_index x
+           JOIN pg_class i ON i.oid = x.indexrelid
+           JOIN pg_class t ON t.oid = x.indrelid
+           WHERE t.relname = 'attendances' AND x.indisunique AND x.indnatts = 2
+             AND x.indpred IS NULL AND pg_get_indexdef(x.indexrelid) LIKE '%("eventId", "talentId")%'
+             AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = x.indexrelid)
+         LOOP EXECUTE format('DROP INDEX IF EXISTS %I', item.index_name); END LOOP;
+       END $$`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "attendances_event_talent_day_unique"
+         ON "attendances" ("eventId", "talentId", "dayIndex")`,
     ]);
   }
 

@@ -14,7 +14,7 @@ const {
     qrTokenFor,
     qrTokenMatchesPoint,
 } = await import('../src/utils/checkInCode.js');
-const { suspensionUntil } = await import('../src/services/attendance.service.js');
+const { suspensionUntil, summarizeAttendance } = await import('../src/services/attendance.service.js');
 
 const point = { id: 'point-1', secret: 'a'.repeat(64), active: true };
 const stepMs = CODE_STEP_SECONDS * 1000;
@@ -58,4 +58,18 @@ test('three no-shows within 90 days suspend bookings for 30 days from the latest
     assert.equal(suspensionUntil([daysAgo(2), daysAgo(10), daysAgo(80)], now).toISOString(), '2026-10-30T12:00:00.000Z');
     // The suspension lifts on its own.
     assert.equal(suspensionUntil([daysAgo(31), daysAgo(40), daysAgo(50)], now), null);
+});
+
+test('multi-day attendance is summarized per usher', () => {
+    const record = (dayIndex, status) => ({ dayIndex, status, checkInTime: null });
+    assert.deepEqual(
+        pick(summarizeAttendance([record(2, 'late'), record(0, 'present'), record(1, 'absent')], 3)),
+        { attendanceStatus: 'late', attendedDays: 2, dayCount: 3, days: [0, 1, 2] },
+    );
+    assert.equal(summarizeAttendance([record(0, 'absent')], 2).attendanceStatus, 'absent');
+    assert.equal(summarizeAttendance([], 2).attendanceStatus, null);
+});
+
+const pick = ({ attendanceStatus, attendedDays, dayCount, attendanceDays }) => ({
+    attendanceStatus, attendedDays, dayCount, days: attendanceDays.map((day) => day.dayIndex),
 });

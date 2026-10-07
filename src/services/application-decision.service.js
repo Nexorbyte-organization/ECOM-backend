@@ -1,7 +1,7 @@
 import { Op } from 'sequelize';
 import { Application, Event, EventFunding } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
-import { eventDayRange, hasEventStarted } from '../utils/eventSchedule.js';
+import { eventDayRange, eventDays, hasEventStarted } from '../utils/eventSchedule.js';
 import { fundingDeadline, perUsherGrossCents } from './funding-policy.js';
 
 export const AUTO_ACCEPT_MIN_RATING = 4.5;
@@ -49,28 +49,52 @@ async function assertSeatFundedAfterDeadline({ event, hiredCount, transaction, n
         where: { eventId: event.id, collectionStatus: 'paid' },
         transaction,
     }) || 0);
-    if (funded < hiredCount * perUsherGrossCents(event.budget)) {
+    if (funded < hiredCount * perUsherGrossCents(event)) {
         throw new AppError('The funding deadline has passed, so this usher can only be booked after their pay is funded. Fund an extra spot first.', 409);
     }
 }
 
-// Another non-cancelled event the same calendar day that already has this usher hired.
-async function sameDayBooking({ event, talentId, transaction }) {
-    // eventDate is a timestamp, so compare the whole calendar day rather than the exact instant.
-    const { start, end } = eventDayRange(event.eventDate);
-    return Event.findOne({
+const sharesADay = (days, other) => {
+    const dates = new Set(days.map((day) => day.date));
+    return eventDays(other).some((day) => dates.has(day.date));
+};
+
+// Events other than `event` that run on at least one of `days`. Candidates are found by date range
+// (endDate is null on events created before multi-day support) and then matched day by day, so an
+// event with a gap between its days does not clash with an event in that gap.
+async function eventsOnDays({ event, days, where = {}, transaction, attributes }) {
+    const first = eventDayRange(days[0].date).start;
+    const last = eventDayRange(days.at(-1).date).end;
+    const candidates = await Event.findAll({
         where: {
-            id: { [Op.ne]: event.id },
-            eventDate: { [Op.gte]: start, [Op.lt]: end },
-            status: { [Op.ne]: 'cancelled' },
-            hiredTalents: { [Op.contains]: [talentId] },
+            ...where,
+            id: { [Op.ne]: event.id, ...(where.id || {}) },
+            eventDate: { [Op.lt]: last },
+            [Op.or]: [{ endDate: { [Op.gte]: first } }, { endDate: null, eventDate: { [Op.gte]: first } }],
         },
         transaction,
+        ...(attributes ? { attributes: [...new Set([...attributes, 'eventDate', 'startTime', 'endTime', 'days'])] } : {}),
     });
+    return candidates.filter((other) => sharesADay(days, other));
 }
 
-// Standby does not block other work. Once the usher is booked elsewhere that day they could not
-// be moved in, so they leave the standby lists of that day's other events.
+// Another non-cancelled event on one of the given days (the event's own days by default) that
+// already has one of these ushers hired.
+export async function findBookingConflict({ event, talentIds, days = eventDays(event), transaction }) {
+    if (!talentIds.length || !days.length) return null;
+    const [conflict] = await eventsOnDays({
+        event,
+        days,
+        where: { status: { [Op.ne]: 'cancelled' }, hiredTalents: { [Op.overlap]: talentIds } },
+        transaction,
+    });
+    return conflict || null;
+}
+
+const sameDayBooking = ({ event, talentId, transaction }) => findBookingConflict({ event, talentIds: [talentId], transaction });
+
+// Standby does not block other work. Once the usher is booked elsewhere on one of those days they
+// could not be moved in, so they leave the standby lists of the other events on those days.
 async function withdrawSameDayStandby({ event, talentId, transaction }) {
     const standby = await Application.findAll({
         where: { talentId, status: 'standby', eventId: { [Op.ne]: event.id } },
@@ -78,9 +102,10 @@ async function withdrawSameDayStandby({ event, talentId, transaction }) {
         transaction,
     });
     if (!standby.length) return;
-    const { start, end } = eventDayRange(event.eventDate);
-    const sameDay = await Event.findAll({
-        where: { id: { [Op.in]: standby.map((application) => application.eventId) }, eventDate: { [Op.gte]: start, [Op.lt]: end } },
+    const sameDay = await eventsOnDays({
+        event,
+        days: eventDays(event),
+        where: { id: { [Op.in]: standby.map((application) => application.eventId) } },
         attributes: ['id'],
         transaction,
     });
@@ -108,7 +133,7 @@ async function placeOnStandby({ application, event, transaction, now = new Date(
     const onStandby = await Application.count({ where: { eventId: event.id, status: 'standby' }, transaction });
     if (onStandby >= standbyCount) throw new AppError('The standby list for this event is full', 409);
     if (await sameDayBooking({ event, talentId: application.talentId, transaction })) {
-        throw new AppError('This usher is already booked for another event on this date', 409);
+        throw new AppError('This usher is already booked for another event on one of these dates', 409);
     }
 
     application.status = 'standby';
@@ -135,7 +160,7 @@ export async function updateApplicationDecision({ application, event, status, tr
         }
 
         if (await sameDayBooking({ event, talentId: application.talentId, transaction })) {
-            throw new AppError('This usher is already booked for another event on this date', 409);
+            throw new AppError('This usher is already booked for another event on one of these dates', 409);
         }
 
         if (!hiredTalents.includes(application.talentId)) {

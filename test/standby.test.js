@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Op } from 'sequelize';
 
 process.env.PG_URI ||= 'postgres://test:test@localhost:5432/standby_tests';
 process.env.JWT_SECRET_KEY ||= 'standby-tests-secret-at-least-32-characters';
 const { Application, Event } = await import('../db/index.js');
 const {
+    findBookingConflict,
     isWithinPromotionGrace,
     maxStandbyCount,
     PROMOTION_GRACE_MS,
@@ -17,7 +19,6 @@ const originals = {
     applicationCount: Application.count,
     applicationFindAll: Application.findAll,
     applicationUpdate: Application.update,
-    eventFindOne: Event.findOne,
     eventFindAll: Event.findAll,
 };
 
@@ -30,8 +31,14 @@ function stubDatabase({ onStandby = 0, bookedElsewhere = false, otherStandby = [
         withdrawn.push({ values, eventIds: where.eventId });
         return [1];
     };
-    Event.findOne = async () => (bookedElsewhere ? { id: 'other-event' } : null);
-    Event.findAll = async () => sameDayEventIds.map((id) => ({ id }));
+    // Both lookups find events by date range: hired ushers (booking conflicts) or standby events.
+    // The stand-ins run on the queried event's day.
+    Event.findAll = async ({ where }) => {
+        const day = new Date(where.eventDate[Op.lt].getTime() - 24 * 60 * 60 * 1000);
+        const onDay = (id) => ({ id, eventDate: day, startTime: '10:00', endTime: '18:00' });
+        if (where.hiredTalents) return bookedElsewhere ? [onDay('other-event')] : [];
+        return sameDayEventIds.map(onDay);
+    };
     return { withdrawn };
 }
 
@@ -39,7 +46,6 @@ test.afterEach(() => {
     Application.count = originals.applicationCount;
     Application.findAll = originals.applicationFindAll;
     Application.update = originals.applicationUpdate;
-    Event.findOne = originals.eventFindOne;
     Event.findAll = originals.eventFindAll;
 });
 
@@ -206,4 +212,16 @@ test('an open spot is filled from standby in order, skipping ushers who cannot b
         User.findByPk = saved.userFindByPk;
         NotificationService.create = saved.notify;
     }
+});
+
+test('a multi-day event clashes only with events on one of its days', async () => {
+    const day = (date) => ({ date, startTime: '10:00', endTime: '18:00' });
+    const multiDay = { id: 'event-1', days: [day('2026-10-20'), day('2026-10-22')] };
+    let candidates = [];
+    Event.findAll = async () => candidates;
+    // An event in the gap between the days does not clash.
+    candidates = [{ id: 'gap', eventDate: new Date('2026-10-21T00:00:00.000Z'), startTime: '10:00', endTime: '18:00', days: [] }];
+    assert.equal(await findBookingConflict({ event: multiDay, talentIds: ['a'] }), null);
+    candidates = [...candidates, { id: 'overlap', days: [day('2026-10-19'), day('2026-10-22')] }];
+    assert.equal((await findBookingConflict({ event: multiDay, talentIds: ['a'] })).id, 'overlap');
 });

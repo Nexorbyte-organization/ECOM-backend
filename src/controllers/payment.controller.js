@@ -39,6 +39,7 @@ import {
   isPaidTransaction,
   maskDestination,
   processAutomaticPayouts,
+  splitPlatformFee,
   reconcileStaleCheckout as reconcileCheckout,
   serializeSettlement,
   staleCheckoutAction,
@@ -62,17 +63,29 @@ const loadEligibleUshers = async (event) => {
     throw new AppError('Mark at least one hired usher as present or late before paying', 409);
   }
 
-  const talentIds = attendance.map((record) => record.talentId);
+  // One entry per usher with the event days they worked (one attendance record per day).
+  const daysByTalent = new Map();
+  attendance.forEach((record) => daysByTalent.set(record.talentId, [...(daysByTalent.get(record.talentId) || []), record]));
+  const talentIds = [...daysByTalent.keys()];
   const talents = await User.findAll({ where: { id: { [Op.in]: talentIds }, role: 'usher' } });
   const talentsById = new Map(talents.map((talent) => [talent.id, talent]));
-  return attendance
-    .map((record) => ({ attendance: record, talent: talentsById.get(record.talentId) }))
+  return talentIds
+    .map((talentId) => {
+      const records = daysByTalent.get(talentId);
+      return {
+        attendance: { status: records.some((record) => record.status === 'late') ? 'late' : 'present' },
+        attendedDays: new Set(records.map((record) => record.dayIndex)).size,
+        talent: talentsById.get(talentId),
+      };
+    })
     .filter((entry) => entry.talent);
 };
 
+// `budget` is the pay for one day, so each usher is paid for the days they worked.
 const buildLineDrafts = (eligibleUshers, budget, excludedTalentIds = new Set()) => {
-  const amounts = calculateSettlementLineAmounts(budget);
-  return eligibleUshers.map(({ attendance, talent }) => {
+  const dayCents = calculateSettlementLineAmounts(budget).grossAmountCents;
+  return eligibleUshers.map(({ attendance, attendedDays, talent }) => {
+    const amounts = splitPlatformFee(dayCents * attendedDays);
     const payout = resolveSettlementPayoutMethod(
       talent.paymentMethods || [], talent.fullName, excludedTalentIds.has(talent.id),
     );
@@ -81,6 +94,7 @@ const buildLineDrafts = (eligibleUshers, budget, excludedTalentIds = new Set()) 
       talentName: talent.fullName,
       talentPhoto: talent.portfolioPicture?.secure_url || '',
       attendanceStatus: attendance.status,
+      attendedDays,
       ...amounts,
       collectionAmountCents: payout.type === 'cash' ? amounts.platformFeeCents : amounts.grossAmountCents,
       payoutMethodType: payout.type,

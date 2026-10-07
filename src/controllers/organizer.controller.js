@@ -2,7 +2,7 @@ import { Op } from 'sequelize';
 import { randomUUID } from 'crypto';
 import { User, Event, Application, Attendance, Review, Referral } from '../../db/index.js';
 import { FundingService } from '../services/funding.service.js';
-import { MIN_PAY_PER_DAY_EGP, minimumBudget } from '../services/funding-policy.js';
+import { MIN_PAY_PER_DAY_EGP } from '../services/funding-policy.js';
 import { AttendanceService } from '../services/attendance.service.js';
 import { EventAutomationService } from '../services/event-automation.service.js';
 import { AppError } from '../utils/appError.js';
@@ -15,24 +15,22 @@ import { getMissingProfileFields, isProfileComplete } from '../utils/profileComp
 import { publicTalent, SECRET_USER_FIELDS, talentForOrganization } from '../utils/publicTalent.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
-import { maxStandbyCount, updateApplicationDecision } from '../services/application-decision.service.js';
+import { findBookingConflict, maxStandbyCount, updateApplicationDecision } from '../services/application-decision.service.js';
 import { StandbyService } from '../services/standby.service.js';
 import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
-import { eventDayRange, hasEventEnded, hasEventStarted } from '../utils/eventSchedule.js';
-import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields } from '../utils/eventEditing.js';
+import { eventDays, hasEventEnded, hasEventStarted, normalizeEventDays, scheduleFromDays } from '../utils/eventSchedule.js';
+import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields, withScheduleChanges } from '../utils/eventEditing.js';
 import { getAnalytics } from '../services/analytics.service.js';
 
 // Changes hired ushers need to hear about.
-const SCHEDULE_FIELDS = ['eventDate', 'startTime', 'endTime', 'location', 'gatheringLocation', 'budget', 'dressCode'];
+const SCHEDULE_FIELDS = ['schedule', 'location', 'gatheringLocation', 'budget', 'dressCode'];
 const SCHEDULE_FIELD_LABELS = {
-    eventDate: 'date', startTime: 'start time', endTime: 'end time', location: 'location',
+    schedule: 'dates and times', location: 'location',
     gatheringLocation: 'meeting point', budget: 'pay', dressCode: 'dress code',
 };
 const scheduleSnapshot = (event) => ({
-    eventDate: new Date(event.eventDate).toISOString().slice(0, 10),
-    startTime: String(event.startTime ?? ''),
-    endTime: String(event.endTime ?? ''),
+    schedule: JSON.stringify(eventDays(event)),
     location: String(event.location ?? ''),
     gatheringLocation: String(event.gatheringLocation ?? ''),
     budget: Number(event.budget),
@@ -40,6 +38,14 @@ const scheduleSnapshot = (event) => ({
 });
 
 const getOrganizerId = (user) => user.role === 'organizer' ? user.id : user.providerOwnerId;
+
+const minimumPayError = () => new AppError(`Pay must be at least ${MIN_PAY_PER_DAY_EGP} EGP per usher for each event day`, 400);
+
+const isBeforeToday = (date) => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return new Date(date) < startOfToday;
+};
 
 const standbyLimitError = (requiredCount) => new AppError(
     `Standby can be at most half the staff count (${maxStandbyCount(requiredCount)} for ${requiredCount} ushers)`, 400,
@@ -226,7 +232,7 @@ export class OrganizerController {
     static async createEvent(req, res, next) {
         const organizerId = getOrganizerId(req.authUser);
         const {
-            title, category, eventDate, applicationDeadline,
+            title, category, days, eventDate, applicationDeadline,
             startTime, endTime, location, requiredCount, standbyCount = 0,
             gatheringLocation, genderPreference, specifyGenders,
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
@@ -237,18 +243,19 @@ export class OrganizerController {
             return next(new AppError('Male and female counts must add up to the required staff count', 400));
         }
         if (Number(standbyCount) > maxStandbyCount(requiredCount)) return next(standbyLimitError(requiredCount));
-        if (startTime >= endTime) return next(new AppError('End time must be after start time', 400));
-        const startOfToday = new Date();
-        startOfToday.setHours(0, 0, 0, 0);
-        if (new Date(eventDate) < startOfToday) return next(new AppError('Event date cannot be in the past', 400));
-        const minimumPay = minimumBudget({ eventDate, startTime, endTime });
-        if (Number(budget) < minimumPay) {
-            return next(new AppError(`Pay must be at least ${minimumPay} EGP per usher (${MIN_PAY_PER_DAY_EGP} EGP for each event day)`, 400));
+        // A one-day event may send eventDate/startTime/endTime instead of `days`.
+        const normalized = normalizeEventDays(days ?? [{ date: eventDate, startTime, endTime }]);
+        if (normalized.error) return next(new AppError(normalized.error, 400));
+        const schedule = scheduleFromDays(normalized.days);
+        if (isBeforeToday(schedule.eventDate)) return next(new AppError('Event date cannot be in the past', 400));
+        if (new Date(applicationDeadline) >= schedule.eventDate) {
+            return next(new AppError('Application deadline must be before the first event day', 400));
         }
+        if (Number(budget) < MIN_PAY_PER_DAY_EGP) return next(minimumPayError());
 
         const event = await Event.create({
-            organizerId, title, category: normalizeEventCategory(category), eventDate, applicationDeadline,
-            startTime, endTime, location, gatheringLocation, requiredCount, standbyCount: Number(standbyCount) || 0,
+            organizerId, title, category: normalizeEventCategory(category), ...schedule, applicationDeadline,
+            location, gatheringLocation, requiredCount, standbyCount: Number(standbyCount) || 0,
             genderPreference: genderPreference || 'any', specifyGenders: Boolean(specifyGenders),
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
             venueLatitude: venueLatitude ?? null, venueLongitude: venueLongitude ?? null,
@@ -339,20 +346,34 @@ export class OrganizerController {
         if (['completed', 'cancelled'].includes(event.status)) {
             return next(new AppError(`A ${event.status} event can no longer be edited`, 409));
         }
-        const locked = lockedEventFields(event, req.body);
+        const schedule = withScheduleChanges(event, req.body);
+        if (schedule.error) return next(new AppError(schedule.error, 400));
+        const changes = schedule.changes;
+        const locked = lockedEventFields(event, changes);
         if (locked.length) {
             const stage = hasEventStarted(event) ? 'an event that has started' : `a ${event.status} event`;
             return next(new AppError(`The ${locked.map((field) => EVENT_FIELD_LABELS[field]).join(', ')} of ${stage} can no longer be changed`, 409));
         }
-        const changed = changedEventFields(event, req.body);
-        if (changed.includes('budget') && Number(req.body.budget) < Number(event.budget) && event.hiredTalents?.length) {
+        const changed = changedEventFields(event, changes);
+        if (changed.includes('budget') && Number(changes.budget) < Number(event.budget) && event.hiredTalents?.length) {
             return next(new AppError('Pay cannot be lowered after ushers are hired', 409));
+        }
+        if (changed.includes('days')) {
+            // Pay covers every day, so the number of days is fixed with the pay.
+            const dayCountBefore = eventDays(event).length;
+            if (changes.days.length !== dayCountBefore && event.status !== 'open') {
+                return next(new AppError(`The number of days of a ${event.status} event can no longer change; only their dates and times can`, 409));
+            }
+            if (changes.days.length < dayCountBefore && event.hiredTalents?.length) {
+                return next(new AppError('Event days cannot be removed after ushers are hired', 409));
+            }
         }
         const scheduleBefore = scheduleSnapshot(event);
 
         changed.forEach(field => {
-            event[field] = req.body[field];
+            event[field] = changes[field];
         });
+        if (changed.includes('days')) event.endDate = schedule.endDate;
 
         if (changed.includes('category')) {
             const category = normalizeEventCategory(req.body.category);
@@ -366,15 +387,9 @@ export class OrganizerController {
         if (new Date(event.applicationDeadline) >= new Date(event.eventDate)) {
             return next(new AppError('Application deadline must be before the event date', 400));
         }
-        if (event.startTime >= event.endTime) return next(new AppError('End time must be after start time', 400));
-        if (['budget', 'eventDate', 'startTime', 'endTime'].some((field) => changed.includes(field))
-            && Number(event.budget) < minimumBudget(event)) {
-            return next(new AppError(`Pay must be at least ${minimumBudget(event)} EGP per usher (${MIN_PAY_PER_DAY_EGP} EGP for each event day)`, 400));
-        }
-        if (changed.includes('eventDate')) {
-            const startOfToday = new Date();
-            startOfToday.setHours(0, 0, 0, 0);
-            if (new Date(event.eventDate) < startOfToday) return next(new AppError('Event date cannot be in the past', 400));
+        if (changed.includes('budget') && Number(event.budget) < MIN_PAY_PER_DAY_EGP) return next(minimumPayError());
+        if (changed.includes('days') && isBeforeToday(event.eventDate)) {
+            return next(new AppError('Event date cannot be in the past', 400));
         }
         if (Number(event.requiredCount) < (event.hiredTalents?.length || 0)) {
             return next(new AppError('Required staff count cannot be lower than the number already hired', 409));
@@ -389,19 +404,9 @@ export class OrganizerController {
         const hiredTalents = event.hiredTalents || [];
         const scheduleAfter = scheduleSnapshot(event);
         const changedScheduleFields = SCHEDULE_FIELDS.filter((field) => scheduleBefore[field] !== scheduleAfter[field]);
-        if (changedScheduleFields.includes('eventDate') && hiredTalents.length) {
-            const { start, end } = eventDayRange(event.eventDate);
-            const conflict = await Event.findOne({
-                where: {
-                    id: { [Op.ne]: event.id },
-                    eventDate: { [Op.gte]: start, [Op.lt]: end },
-                    status: { [Op.ne]: 'cancelled' },
-                    hiredTalents: { [Op.overlap]: hiredTalents },
-                },
-            });
-            if (conflict) {
-                return next(new AppError('Some hired ushers are already booked for another event on the new date', 409));
-            }
+        if (changedScheduleFields.includes('schedule') && hiredTalents.length
+            && await findBookingConflict({ event, talentIds: hiredTalents })) {
+            return next(new AppError('Some hired ushers are already booked for another event on one of the new dates', 409));
         }
         await event.save();
         // A larger team is filled from standby first.
@@ -581,6 +586,7 @@ export class OrganizerController {
             status: req.body.status,
             staffUser: req.authUser,
             location: req.body.location,
+            dayIndex: req.body.dayIndex,
         });
         return res.status(200).json({
             success: true,
@@ -596,12 +602,15 @@ export class OrganizerController {
         if (!found) return next(new AppError(messages.event.notfound, 404));
         await EventAutomationService.sweepQuietly({ eventIds: [found.id] });
 
+        // One record per usher and event day.
         const records = await Attendance.findAll({
             where: { eventId: id },
-            order: [['createdAt', 'ASC']],
+            order: [['dayIndex', 'ASC'], ['createdAt', 'ASC']],
         });
+        const days = eventDays(found);
         const data = await Promise.all(records.map(async (attendance) => ({
             ...attendance.toJSON(),
+            date: days[attendance.dayIndex]?.date || null,
             talent: await User.findByPk(attendance.talentId, {
                 attributes: ['id', 'fullName', 'portfolioPicture', 'city', 'rate', 'isVerified'],
             }),
@@ -627,8 +636,8 @@ export class OrganizerController {
         if (event.status !== 'completed' && !hasEventEnded(event)) {
             return next(new AppError('Ushers can be reviewed after the event ends', 409));
         }
-        const attendance = await Attendance.findOne({ where: { eventId: id, talentId } });
-        if (!attendance || !['present', 'late'].includes(attendance.status)) {
+        const attendance = await Attendance.findOne({ where: { eventId: id, talentId, status: { [Op.in]: ['present', 'late'] } } });
+        if (!attendance) {
             return next(new AppError('Only ushers who attended can be reviewed', 409));
         }
 
@@ -844,7 +853,12 @@ export class OrganizerController {
         });
         const includedTalents = talents.filter((talent) => talent.whatsappNumber || talent.mobileNumber);
         const excludedNoPhone = talents.filter((talent) => !talent.whatsappNumber && !talent.mobileNumber);
-        const message = `You are invited to “${event.title}” on ${new Date(event.eventDate).toLocaleDateString('en-GB')} at ${event.location}.`;
+        const days = eventDays(event);
+        const formatDay = (day) => new Date(`${day.date}T00:00:00.000Z`).toLocaleDateString('en-GB', { timeZone: 'UTC' });
+        const when = days.length > 1
+            ? `on ${days.length} days from ${formatDay(days[0])} to ${formatDay(days.at(-1))}`
+            : `on ${formatDay(days[0])}`;
+        const message = `You are invited to “${event.title}” ${when} at ${event.location}.`;
         const groupLink = `https://wa.me/?text=${encodeURIComponent(message)}`;
 
         event.whatsappGroupId = randomUUID();

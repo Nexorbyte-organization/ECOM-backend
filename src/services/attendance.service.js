@@ -4,7 +4,7 @@ import { sequelize } from '../../db/connection.js';
 import { Attendance, CheckInPoint, Event, User } from '../../db/index.js';
 import { SELF_CHECK_IN_METHODS } from '../../db/models/attendance.model.js';
 import { AppError } from '../utils/appError.js';
-import { checkInStatusAt, checkInWindow } from '../utils/eventSchedule.js';
+import { checkInDayAt, closedCheckInDays, eventDays } from '../utils/eventSchedule.js';
 import {
     CHECK_IN_RADIUS_METERS,
     MAX_LOCATION_ACCURACY_METERS,
@@ -32,7 +32,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const GOOD_EVENTS_TO_RESET_EXCUSES = 5;
 const PAYABLE = ['present', 'late'];
 
-// The suspension end implied by an usher's recent no-shows, or null.
+// The suspension end implied by an usher's recent no-shows, or null. Pass one date per event: missing
+// several days of one event counts as one no-show.
 export const suspensionUntil = (noShowDates, now = new Date()) => {
     const since = now.getTime() - NO_SHOW_WINDOW_DAYS * DAY_MS;
     const recent = noShowDates
@@ -59,19 +60,45 @@ const readLocation = (input) => {
     return location;
 };
 
+const dayLabel = (event, dayIndex) => (eventDays(event).length > 1 ? `day ${dayIndex + 1}` : 'the event');
+
+// The day an usher is checking in for right now and whether they are on time.
 const assertWindowOpen = (event) => {
     if (event.status === 'cancelled' || event.status === 'completed' || event.fundsReleasedAt) {
         throw new AppError('Check-in is closed for this event', 409);
     }
-    const arrival = checkInStatusAt(event);
-    if (arrival === 'early') throw new AppError('Check-in opens 2 hours before the event starts', 409);
-    if (arrival === 'closed') throw new AppError('Check-in is closed for this event', 409);
-    return arrival;
+    const { status, dayIndex } = checkInDayAt(event);
+    if (status === 'early') {
+        throw new AppError(dayIndex === 0
+            ? 'Check-in opens 2 hours before the event starts'
+            : `Check-in for day ${dayIndex + 1} opens 2 hours before it starts`, 409);
+    }
+    if (status === 'closed') throw new AppError('Check-in is closed for this event', 409);
+    return { arrival: status, dayIndex };
 };
 
-const updateStreak = (talent, previousStatus, status) => {
+// The day a staff check-in is for: the requested day once its check-in has opened, otherwise the
+// current day, or the latest day that has started when check-in is between days or closed.
+const staffCheckInDay = (event, requested, now = new Date()) => {
+    const days = eventDays(event);
+    const current = checkInDayAt(event, now);
+    const opened = current.status === 'early' ? current.dayIndex - 1 : current.dayIndex;
+    if (requested === undefined || requested === null) {
+        if (opened < 0) throw new AppError('Check-in opens 2 hours before the event starts', 409);
+        return opened;
+    }
+    const dayIndex = Number(requested);
+    if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex >= days.length) {
+        throw new AppError('This event does not have that day', 400);
+    }
+    if (dayIndex > opened) throw new AppError(`Check-in for ${dayLabel(event, dayIndex)} has not opened yet`, 409);
+    return dayIndex;
+};
+
+// The streak counts events, so on a multi-day event only the first day checked in adds to it.
+const updateStreak = (talent, previousStatus, status, { eventAlreadyCounted = false } = {}) => {
     const wasGood = PAYABLE.includes(previousStatus);
-    if (PAYABLE.includes(status) && !wasGood) {
+    if (PAYABLE.includes(status) && !wasGood && !eventAlreadyCounted) {
         talent.consecutiveGoodEvents = (talent.consecutiveGoodEvents || 0) + 1;
         if (talent.consecutiveGoodEvents >= GOOD_EVENTS_TO_RESET_EXCUSES) {
             talent.lateExcuseCount = 0;
@@ -82,13 +109,36 @@ const updateStreak = (talent, previousStatus, status) => {
     }
 };
 
+const attendedAnotherDay = async ({ eventId, talentId, dayIndex, transaction }) => Boolean(await Attendance.count({
+    where: { eventId, talentId, dayIndex: { [Op.ne]: dayIndex }, status: { [Op.in]: PAYABLE } },
+    transaction,
+}));
+
+// One usher's attendance on an event across its days: present or late when they worked at least
+// one day (late if any day was late), absent when every recorded day was missed.
+export const summarizeAttendance = (records, dayCount = 1) => {
+    const worked = records.filter((record) => PAYABLE.includes(record.status));
+    const attendanceStatus = worked.length
+        ? (worked.some((record) => record.status === 'late') ? 'late' : 'present')
+        : records.some((record) => record.status === 'absent') ? 'absent' : null;
+    return {
+        attendanceStatus,
+        attendedDays: new Set(worked.map((record) => record.dayIndex)).size,
+        dayCount,
+        attendanceDays: [...records]
+            .sort((a, b) => a.dayIndex - b.dayIndex)
+            .map((record) => ({ dayIndex: record.dayIndex, status: record.status, checkInTime: record.checkInTime })),
+    };
+};
+
 export class AttendanceService {
     // ── Staff check-in points ──────────────────────────────────────────────────
+    // opensAt/closesAt are the current day's check-in window, or the next day's between days.
     static pointView(point, event, now = Date.now()) {
-        const { opensAt, closesAt } = checkInWindow(event);
-        const open = point.active && now >= opensAt.getTime() && now <= closesAt.getTime()
+        const { opensAt, closesAt, status, dayIndex } = checkInDayAt(event, new Date(now));
+        const open = point.active && ['present', 'late'].includes(status)
             && !event.fundsReleasedAt && !['cancelled', 'completed'].includes(event.status);
-        const view = { point: point.toJSON(), open, opensAt, closesAt };
+        const view = { point: point.toJSON(), open, opensAt, closesAt, dayIndex, dayCount: eventDays(event).length };
         if (!open) return view;
         const token = qrTokenFor(point);
         const configuredFrontend = (process.env.FRONTEND_URL || '').split(',')[0].trim();
@@ -194,9 +244,9 @@ export class AttendanceService {
     static async recordSelfCheckIn({ event, talentId, method, point, location }) {
         const result = await sequelize.transaction(async (transaction) => {
             const lockedEvent = await Event.findByPk(event.id, { transaction, lock: transaction.LOCK.UPDATE });
-            const arrival = assertWindowOpen(lockedEvent);
+            const { arrival, dayIndex } = assertWindowOpen(lockedEvent);
             const talent = await User.findByPk(talentId, { transaction, lock: transaction.LOCK.UPDATE });
-            const existing = await Attendance.findOne({ where: { eventId: event.id, talentId }, transaction, lock: transaction.LOCK.UPDATE });
+            const existing = await Attendance.findOne({ where: { eventId: event.id, talentId, dayIndex }, transaction, lock: transaction.LOCK.UPDATE });
             const previousStatus = existing?.status || null;
             if (existing && PAYABLE.includes(previousStatus)) {
                 // A repeated check-in keeps the first arrival; staff check-in becomes self-proven.
@@ -219,9 +269,10 @@ export class AttendanceService {
             };
             const attendance = existing
                 ? await existing.update(values, { transaction })
-                : await Attendance.create({ eventId: event.id, talentId, ...values }, { transaction });
+                : await Attendance.create({ eventId: event.id, talentId, dayIndex, ...values }, { transaction });
             if (talent) {
-                updateStreak(talent, previousStatus, arrival);
+                const eventAlreadyCounted = await attendedAnotherDay({ eventId: event.id, talentId, dayIndex, transaction });
+                updateStreak(talent, previousStatus, arrival, { eventAlreadyCounted });
                 await talent.save({ transaction });
             }
             return { attendance, alreadyCheckedIn: false };
@@ -232,21 +283,22 @@ export class AttendanceService {
 
     // Staff can check in an usher whose phone cannot (no camera, no location, dead battery). They
     // can never mark anyone absent and never change an usher's own check-in, so this only ever
-    // adds pay. It stays possible until the payments are released.
-    static async staffCheckIn({ event, talentId, status, staffUser, location: input }) {
+    // adds pay. It stays possible until the payments are released, for any day whose check-in has
+    // opened (the current day by default).
+    static async staffCheckIn({ event, talentId, status, staffUser, location: input, dayIndex: requestedDay }) {
         if (!PAYABLE.includes(status)) throw new AppError('Staff can only check ushers in as present or late', 400);
         if (event.status === 'cancelled') throw new AppError('Attendance cannot be recorded for a cancelled event', 409);
         if (event.fundsReleasedAt) throw new AppError('This event’s payments were already released', 409);
         if (!(event.hiredTalents || []).includes(talentId)) throw new AppError('This usher is not hired for this event', 400);
-        if (checkInStatusAt(event) === 'early') throw new AppError('Check-in opens 2 hours before the event starts', 409);
+        const dayIndex = staffCheckInDay(event, requestedDay);
         const location = input && isValidCoordinate({ latitude: Number(input.latitude), longitude: Number(input.longitude) })
             ? { latitude: Number(input.latitude), longitude: Number(input.longitude) }
             : null;
 
         const attendance = await sequelize.transaction(async (transaction) => {
-            const existing = await Attendance.findOne({ where: { eventId: event.id, talentId }, transaction, lock: transaction.LOCK.UPDATE });
+            const existing = await Attendance.findOne({ where: { eventId: event.id, talentId, dayIndex }, transaction, lock: transaction.LOCK.UPDATE });
             if (existing && SELF_CHECK_IN_METHODS.includes(existing.checkInMethod) && PAYABLE.includes(existing.status)) {
-                throw new AppError('This usher already checked in with their own phone', 409);
+                throw new AppError(`This usher already checked in for ${dayLabel(event, dayIndex)} with their own phone`, 409);
             }
             if (existing?.status === 'present' && status === 'late') {
                 throw new AppError('An usher checked in as present cannot be changed to late', 409);
@@ -262,10 +314,11 @@ export class AttendanceService {
             };
             const record = existing
                 ? await existing.update(values, { transaction })
-                : await Attendance.create({ eventId: event.id, talentId, ...values }, { transaction });
+                : await Attendance.create({ eventId: event.id, talentId, dayIndex, ...values }, { transaction });
             const talent = await User.findByPk(talentId, { transaction, lock: transaction.LOCK.UPDATE });
             if (talent) {
-                updateStreak(talent, previousStatus, status);
+                const eventAlreadyCounted = await attendedAnotherDay({ eventId: event.id, talentId, dayIndex, transaction });
+                updateStreak(talent, previousStatus, status, { eventAlreadyCounted });
                 await talent.save({ transaction });
             }
             return record;
@@ -274,36 +327,45 @@ export class AttendanceService {
         return attendance;
     }
 
-    // After check-in closes, every hired usher without a check-in is a no-show. Idempotent.
+    // When a day's check-in closes, every hired usher without a check-in that day missed it.
+    // Idempotent.
     static async finalizeAttendance(event, now = new Date()) {
         if (event.status === 'cancelled' || event.fundsReleasedAt) return [];
-        if (now <= checkInWindow(event).closesAt) return [];
+        const closedDays = closedCheckInDays(event, now);
+        if (!closedDays.length) return [];
         const hired = [...new Set(event.hiredTalents || [])];
         if (!hired.length) return [];
-        const existing = await Attendance.findAll({ where: { eventId: event.id, talentId: { [Op.in]: hired } }, attributes: ['talentId'] });
-        const marked = new Set(existing.map((record) => record.talentId));
-        const missing = hired.filter((talentId) => !marked.has(talentId));
+        const existing = await Attendance.findAll({
+            where: { eventId: event.id, talentId: { [Op.in]: hired }, dayIndex: { [Op.in]: closedDays } },
+            attributes: ['talentId', 'dayIndex'],
+        });
+        const marked = new Set(existing.map((record) => `${record.talentId}:${record.dayIndex}`));
+        const multiDay = eventDays(event).length > 1;
         const created = [];
-        for (const talentId of missing) {
-            const [record, isNew] = await Attendance.findOrCreate({
-                where: { eventId: event.id, talentId },
-                defaults: { status: 'absent', checkInMethod: 'auto' },
-            });
-            if (!isNew) continue;
-            created.push(record);
-            const talent = await User.findByPk(talentId);
-            if (talent) {
-                updateStreak(talent, null, 'absent');
-                await talent.save();
+        for (const dayIndex of closedDays) {
+            for (const talentId of hired.filter((id) => !marked.has(`${id}:${dayIndex}`))) {
+                const [record, isNew] = await Attendance.findOrCreate({
+                    where: { eventId: event.id, talentId, dayIndex },
+                    defaults: { status: 'absent', checkInMethod: 'auto' },
+                });
+                if (!isNew) continue;
+                created.push(record);
+                const talent = await User.findByPk(talentId);
+                if (talent) {
+                    updateStreak(talent, null, 'absent');
+                    await talent.save();
+                }
+                await this.afterAttendanceChange(talentId);
+                await notifySafely({
+                    userId: talentId,
+                    title: 'Missed check-in',
+                    message: multiDay
+                        ? `You did not check in on day ${dayIndex + 1} of “${event.title}”, so you will not be paid for that day and it counts as a no-show. ${NO_SHOW_LIMIT} no-show events within ${NO_SHOW_WINDOW_DAYS} days suspend new bookings for ${NO_SHOW_SUSPENSION_DAYS} days.`
+                        : `You did not check in at “${event.title}”, so it counts as a no-show and you will not be paid for it. ${NO_SHOW_LIMIT} no-shows within ${NO_SHOW_WINDOW_DAYS} days suspend new bookings for ${NO_SHOW_SUSPENSION_DAYS} days.`,
+                    type: 'danger',
+                    link: '/talent/events',
+                });
             }
-            await this.afterAttendanceChange(talentId);
-            await notifySafely({
-                userId: talentId,
-                title: 'Missed check-in',
-                message: `You did not check in at “${event.title}”, so it counts as a no-show and you will not be paid for it. ${NO_SHOW_LIMIT} no-shows within ${NO_SHOW_WINDOW_DAYS} days suspend new bookings for ${NO_SHOW_SUSPENSION_DAYS} days.`,
-                type: 'danger',
-                link: '/talent/events',
-            });
         }
         return created;
     }
@@ -317,11 +379,17 @@ export class AttendanceService {
         const since = new Date(now.getTime() - NO_SHOW_WINDOW_DAYS * DAY_MS);
         const noShows = await Attendance.findAll({
             where: { talentId, status: 'absent', updatedAt: { [Op.gte]: since } },
-            attributes: ['updatedAt'],
+            attributes: ['eventId', 'updatedAt'],
         });
         const talent = await User.findByPk(talentId);
         if (!talent) return null;
-        const until = suspensionUntil(noShows.map((record) => record.updatedAt), now);
+        // Missing several days of one event counts once, at the latest missed day.
+        const latestByEvent = new Map();
+        noShows.forEach((record) => {
+            const time = new Date(record.updatedAt).getTime();
+            latestByEvent.set(record.eventId, Math.max(latestByEvent.get(record.eventId) || 0, time));
+        });
+        const until = suspensionUntil([...latestByEvent.values()].map((time) => new Date(time)), now);
         const current = talent.suspendedUntil ? new Date(talent.suspendedUntil) : null;
         const changed = (until?.getTime() || null) !== (current?.getTime() || null);
         if (!changed) return until;

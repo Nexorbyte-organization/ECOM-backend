@@ -60,7 +60,7 @@ export class OrganizerCreditService {
   static async overduePayAfterEvents(organizerId, now = new Date()) {
     const candidates = (await Event.findAll({
       where: { organizerId, status: 'completed', fundingMode: 'pay_after' },
-      attributes: ['id', 'title', 'eventDate', 'startTime', 'endTime', 'hiredTalents'],
+      attributes: ['id', 'title', 'eventDate', 'startTime', 'endTime', 'days', 'hiredTalents'],
     })).filter((event) => {
       const overdueAt = payAfterOverdueAt(event);
       return overdueAt && now >= overdueAt;

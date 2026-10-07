@@ -11,6 +11,8 @@ const {
     fundingDeadline,
     minimumBudget,
     paymentProtection,
+    perUsherDayCents,
+    perUsherGrossCents,
     planCancellation,
     planRelease,
     planUnfundedSeatDrops,
@@ -145,4 +147,52 @@ test('trust needs three paid events and a clean record; an admin override wins',
     const forced = evaluateTier({ ...clean, override: 'standard' });
     assert.equal(forced.tier, 'standard');
     assert.equal(forced.automaticTier, 'trusted');
+});
+
+test('a multi-day event is funded in advance for every day at the daily pay', () => {
+    const threeDays = event({
+        budget: 700,
+        days: [
+            { date: '2026-10-20', startTime: '10:00', endTime: '18:00' },
+            { date: '2026-10-21', startTime: '12:00', endTime: '22:00' },
+            { date: '2026-10-22', startTime: '09:00', endTime: '14:00' },
+        ],
+    });
+    assert.equal(eventDayCount(threeDays), 3);
+    assert.equal(perUsherDayCents(threeDays), 70000);
+    assert.equal(perUsherGrossCents(threeDays), 210000);
+    // Three hired ushers × 700 EGP × 3 days.
+    assert.equal(summarizeFunding(threeDays, []).requiredCents, 630000);
+    assert.equal(minimumBudget(threeDays), 600);
+    // Release is due a day after the last day ends (14:00 Cairo is 11:00 UTC).
+    assert.equal(releaseDueAt(threeDays).toISOString(), '2026-10-23T11:00:00.000Z');
+});
+
+test('release pays each usher for the days they checked in and returns missed days', () => {
+    const records = (talentId, statuses) => statuses.map((status, dayIndex) => ({ talentId, dayIndex, status }));
+    const attendance = new Map([
+        ['a', records('a', ['present', 'present', 'late'])],
+        ['b', records('b', ['present', 'absent'])],
+        ['c', records('c', ['absent', 'absent', 'absent'])],
+    ]);
+    // 1,000 EGP a day for 3 days, fully funded for 3 ushers.
+    const plan = planRelease({ hiredTalentIds: ['a', 'b', 'c'], attendanceByTalent: attendance, perUsherCents: 100000, dayCount: 3, fundedCents: 900000 });
+    assert.deepEqual(plan.payable.map(({ talentId, attendedDays, attendanceStatus, grossAmountCents }) => ({ talentId, attendedDays, attendanceStatus, grossAmountCents })), [
+        { talentId: 'a', attendedDays: 3, attendanceStatus: 'late', grossAmountCents: 300000 },
+        { talentId: 'b', attendedDays: 1, attendanceStatus: 'present', grossAmountCents: 100000 },
+    ]);
+    assert.deepEqual(plan.noShows.map(({ talentId, missedDays }) => ({ talentId, missedDays })), [
+        { talentId: 'b', missedDays: 2 },
+        { talentId: 'c', missedDays: 3 },
+    ]);
+    // Five missed days: 5% fee kept, 95% wage returned.
+    assert.equal(plan.noShowFeeCents, 25000);
+    assert.equal(plan.noShowWageCents, 475000);
+    assert.equal(plan.requiredCents, 900000);
+    assert.deepEqual(plan.blockers, []);
+    const paidOut = plan.payable.reduce((total, line) => total + line.grossAmountCents, 0);
+    assert.equal(paidOut + plan.noShowFeeCents + plan.noShowWageCents, 900000);
+
+    const underfunded = planRelease({ hiredTalentIds: ['a', 'b', 'c'], attendanceByTalent: attendance, perUsherCents: 100000, dayCount: 3, fundedCents: 300000 });
+    assert.deepEqual(underfunded.blockers, [{ code: 'underfunded', shortfallCents: 600000 }]);
 });
