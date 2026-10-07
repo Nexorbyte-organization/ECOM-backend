@@ -23,6 +23,15 @@ Pay (`budget`, per usher per day) must be at least `MIN_PAY_PER_DAY_EGP` (600); 
 
 Account deletion is refused while an organization has non-zero credit or a card refund in progress, or while an usher has awaiting/queued/processing pay.
 
+## Card holds (preauth) mode
+With `PAYMOB_AUTH_INTEGRATION_ID` set (a Paymob Auth card integration), new events get `fundingMode: preauth`. Rules live in `src/services/preauth-policy.js`, orchestration in `src/services/preauth.service.js`; money is kept in `EventFunding` rows with `kind` `fee` or `day_hold`. Existing prefund and pay-after events are unchanged.
+
+The booking fee is the 5% platform fee on every seat and day (`requiredCount` × days × fee per seat-day): an ordinary Paymob charge the organization pays after creating the event (POST /organizer/events/:id/funding with `kind: "fee"`). It is never refunded, even on cancellation. Confirming the team requires it. The usher wages are never charged in advance. For each event day the organization authorizes a card hold of `requiredCount` × wage (POST funding with `kind: "day_hold"` and `dayIndex`), allowed from 5 days before the day starts (holds last about a week) until it starts. The hold is created through Paymob's Auth integration; the callback marks it `authorized`. A hold charged outright (the integration is not an Auth one) is refunded at once and marked failed.
+
+24 hours after a day ends the sweep closes its hold: usher wages for hired ushers who checked in that day are captured (`/api/acceptance/capture`, partial amount) and paid out through one settlement per day (`EventSettlement.dayIndex`, `OO-DAY-…`); with nobody present the hold is voided (`/api/acceptance/void_refund/void`). Each close claims the row (`closing`) before calling Paymob, and a Paymob failure puts it back to `authorized` for the next sweep. Reminders to place a missing hold go out at most daily (`events.holdReminders`). If the fee or the first day's hold is missing 24 hours before the event starts, the event is cancelled automatically. Later unsecured days only produce reminders. Once every day is captured, voided, or unsecured, the event completes and `fundsReleasedAt` is set.
+
+Admin cancellation fixes the compensation on each open hold by hours before that day (72h+ none, 24-72h half, under 24h all of each hired usher's wage, capped by the hold), captures that and voids the rest; settlements are `OO-CANCEL-…`. The pay, staff count and number of days cannot change once the fee is paid. Paying with a saved card still opens Paymob's hosted checkout (no unattended charging of tokens). Unverified against a live Paymob sandbox: capture/void request shape, partial capture releasing the remainder, and whether the Auth integration accepts saved-card tokens.
+
 ## Pay-after settlements (post-event checkout)
 Settlement preview/create (bulk and individual) is only available for `pay_after` events; prefund events return 409. Cash marking is only for `checkout` settlements.
 
@@ -47,6 +56,8 @@ Saved-card removal sets `deletedAt` as well as disabling the card and selecting 
 ## Source entry points
 - `src/services/funding-policy.js`
 - `src/services/funding.service.js`
+- `src/services/preauth.service.js`
+- `src/services/preauth-policy.js`
 - `src/services/prefund-settlement.js`
 - `src/services/funding-refund.service.js`
 - `src/services/event-automation.service.js`

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { Event, EventFunding, EventSettlement, OrganizerCard, User } from '../../db/index.js';
 import { AppError } from '../utils/appError.js';
 import { FundingService } from '../services/funding.service.js';
+import { PreauthService } from '../services/preauth.service.js';
 import { FundingRefundService } from '../services/funding-refund.service.js';
 import { OrganizerCreditService } from '../services/organizer-credit.service.js';
 import { AttendanceService } from '../services/attendance.service.js';
@@ -58,7 +59,9 @@ export class FundingController {
     const event = await ownedEvent(req.params.id, req.authUser);
     await EventAutomationService.sweepQuietly({ eventIds: [event.id] });
     await event.reload();
-    const data = await FundingService.publicSummary(event);
+    const data = event.fundingMode === 'preauth'
+      ? await PreauthService.publicSummary(event)
+      : await FundingService.publicSummary(event);
     if (req.authUser.role === 'organizer') {
       data.savedCards = await OrganizerCard.findAll({
         where: { organizerId: event.organizerId, isActive: true, isLive: false },
@@ -70,6 +73,23 @@ export class FundingController {
 
   static async startEventFunding(req, res) {
     const event = await ownedEvent(req.params.id, req.authUser);
+    if (event.fundingMode === 'preauth') {
+      // `kind` is the booking fee or one day's hold (with `dayIndex`).
+      const kind = req.body?.kind;
+      const dayIndex = req.body?.dayIndex === undefined ? -1 : Number(req.body.dayIndex);
+      const prepared = await PreauthService.startCharge({
+        eventId: event.id, organizerId: event.organizerId, kind, dayIndex, cardId: req.body?.cardId || null,
+      });
+      const refreshed = await Event.findByPk(event.id);
+      return res.status(prepared.reused ? 200 : 201).json({
+        success: true,
+        data: {
+          checkout: prepared.checkout.toJSON(),
+          checkoutUrl: prepared.checkout.checkoutUrl || null,
+          funding: await PreauthService.publicSummary(refreshed),
+        },
+      });
+    }
     const prepared = await FundingService.startFunding({
       eventId: event.id,
       organizerId: event.organizerId,
@@ -115,7 +135,8 @@ export class FundingController {
       throw new AppError('Not authorized to view this funding', 403);
     }
     if (['not_started', 'pending'].includes(funding.collectionStatus)) {
-      await FundingService.reconcileStaleFundings(funding.eventId);
+      if (funding.kind === 'advance') await FundingService.reconcileStaleFundings(funding.eventId);
+      else await PreauthService.reconcileStale(funding.eventId);
       await funding.reload();
     }
     const event = await Event.findByPk(funding.eventId, { paranoid: false });
@@ -124,7 +145,9 @@ export class FundingController {
       data: {
         ...funding.toJSON(),
         event: event ? { _id: event.id, title: event.title } : null,
-        eventFunding: event && !event.deletedAt ? await FundingService.publicSummary(event, { includeRelease: false }) : null,
+        eventFunding: event && !event.deletedAt
+          ? (event.fundingMode === 'preauth' ? await PreauthService.publicSummary(event) : await FundingService.publicSummary(event, { includeRelease: false }))
+          : null,
       },
     });
   }
