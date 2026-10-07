@@ -22,6 +22,8 @@ import { sequelize } from '../../db/connection.js';
 import { eventDays, hasEventEnded, hasEventStarted, normalizeEventDays, scheduleFromDays } from '../utils/eventSchedule.js';
 import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields, withScheduleChanges } from '../utils/eventEditing.js';
 import { getAnalytics } from '../services/analytics.service.js';
+import { PreauthService } from '../services/preauth.service.js';
+import { isPreauthConfigured } from '../services/paymob.service.js';
 
 // Changes hired ushers need to hear about.
 const SCHEDULE_FIELDS = ['schedule', 'location', 'gatheringLocation', 'budget', 'dressCode'];
@@ -260,6 +262,8 @@ export class OrganizerController {
             malesCount, femalesCount, budget, dressCode, notes, whatsappGroupLink,
             venueLatitude: venueLatitude ?? null, venueLongitude: venueLongitude ?? null,
             status: 'open', hiredTalents: [], supervisorIds: [],
+            // With a Paymob Auth integration configured, usher pay is held on the card day by day.
+            fundingMode: isPreauthConfigured() ? 'preauth' : 'prefund',
         });
 
         return res.status(201).json({
@@ -355,6 +359,11 @@ export class OrganizerController {
             return next(new AppError(`The ${locked.map((field) => EVENT_FIELD_LABELS[field]).join(', ')} of ${stage} can no longer be changed`, 409));
         }
         const changed = changedEventFields(event, changes);
+        if (event.fundingMode === 'preauth' && changed.some((field) => ['budget', 'requiredCount'].includes(field)
+            || (field === 'days' && changes.days.length !== eventDays(event).length))
+            && await PreauthService.feeIsPaid(event.id)) {
+            return next(new AppError('The booking fee was already paid and is not refundable, so the pay, staff count, and number of days can no longer change', 409));
+        }
         if (changed.includes('budget') && Number(changes.budget) < Number(event.budget) && event.hiredTalents?.length) {
             return next(new AppError('Pay cannot be lowered after ushers are hired', 409));
         }

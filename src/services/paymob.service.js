@@ -204,29 +204,63 @@ export const buildIntentionPayload = ({ settlement, event, organizer, lines, con
   };
 };
 
-// One checkout for the part of an event's advance funding not covered by organization credit.
-export const buildFundingIntentionPayload = ({ funding, event, organizer, config, cardToken }) => ({
-  amount: funding.amountCents,
-  currency: funding.currency,
-  payment_methods: cardToken ? [getCardEnrollmentIntegrationId(config)] : config.paymentMethods,
-  items: [{
-    name: `${event.title} — usher pay in advance`.slice(0, 255),
+const FUNDING_ITEMS = {
+  advance: { suffix: 'usher pay in advance', description: 'OO-Ushers event funding, held until the event payments are released' },
+  fee: { suffix: 'booking fee', description: 'OO-Ushers non-refundable booking fee' },
+  day_hold: { suffix: 'usher pay hold', description: 'OO-Ushers card hold for one event day, captured after the day for ushers who checked in' },
+};
+
+// Optional integration for card holds: an Auth-type test integration, so the card is authorized
+// and later captured or voided instead of being charged at once.
+export const getAuthIntegrationId = () => {
+  const configured = process.env.PAYMOB_AUTH_INTEGRATION_ID?.trim();
+  if (!configured) return null;
+  const integrationId = Number(configured);
+  if (!Number.isSafeInteger(integrationId) || integrationId <= 0) {
+    throw new PaymobConfigurationError('PAYMOB_AUTH_INTEGRATION_ID must be a Test Auth card integration ID');
+  }
+  return integrationId;
+};
+
+export const isPreauthConfigured = () => {
+  try {
+    return getAuthIntegrationId() !== null;
+  } catch {
+    return false;
+  }
+};
+
+// One checkout for event funding. `funding.kind` says whether it is the legacy advance funding, the
+// non-refundable booking fee (an ordinary charge), or a day hold (authorized on the Auth integration).
+export const buildFundingIntentionPayload = ({ funding, event, organizer, config, cardToken }) => {
+  const item = FUNDING_ITEMS[funding.kind || 'advance'];
+  const hold = funding.kind === 'day_hold';
+  const authIntegrationId = hold ? getAuthIntegrationId() : null;
+  if (hold && !authIntegrationId) throw new PaymobConfigurationError('PAYMOB_AUTH_INTEGRATION_ID is required for card holds');
+  return {
     amount: funding.amountCents,
-    description: 'OO-Ushers event funding, held until the event payments are released',
-    quantity: 1,
-  }],
-  billing_data: billingData(organizer),
-  ...(cardToken ? { card_tokens: [cardToken] } : {}),
-  extras: {
-    funding_id: funding.id,
-    event_id: event.id,
-    organizer_id: funding.organizerId,
-  },
-  special_reference: funding.specialReference,
-  expiration: 3600,
-  notification_url: `${config.backendUrl}/payments/paymob/webhook`,
-  redirection_url: `${config.frontendUrl}/provider/payments/result?fundingId=${funding.id}`,
-});
+    currency: funding.currency,
+    payment_methods: hold ? [authIntegrationId] : cardToken ? [getCardEnrollmentIntegrationId(config)] : config.paymentMethods,
+    items: [{
+      name: `${event.title} — ${item.suffix}`.slice(0, 255),
+      amount: funding.amountCents,
+      description: item.description,
+      quantity: 1,
+    }],
+    billing_data: billingData(organizer),
+    ...(cardToken ? { card_tokens: [cardToken] } : {}),
+    extras: {
+      funding_id: funding.id,
+      event_id: event.id,
+      organizer_id: funding.organizerId,
+      ...(hold ? { day_index: funding.dayIndex } : {}),
+    },
+    special_reference: funding.specialReference,
+    expiration: 3600,
+    notification_url: `${config.backendUrl}/payments/paymob/webhook`,
+    redirection_url: `${config.frontendUrl}/provider/payments/result?fundingId=${funding.id}`,
+  };
+};
 
 export const buildCardEnrollmentPayload = ({ enrollment, organizer, config, integrationId }) => ({
   amount: 1000,
@@ -375,5 +409,34 @@ export const refundTransaction = async ({ transactionId, amountCents }) => {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ transaction_id: Number(transactionId) || String(transactionId), amount_cents: amountCents }),
+  });
+};
+
+const acceptanceTransactionRequest = async (path, body) => {
+  const config = getPaymobTestConfig();
+  return requestJson(`${config.baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${config.secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+};
+
+// Captures part or all of an authorized card hold. Paymob releases the rest of the hold.
+export const captureTransaction = async ({ transactionId, amountCents }) => {
+  if (!transactionId) throw new PaymobRequestError('The authorized Paymob transaction is unknown');
+  return acceptanceTransactionRequest('/api/acceptance/capture', {
+    transaction_id: Number(transactionId) || String(transactionId),
+    amount_cents: amountCents,
+  });
+};
+
+// Releases an authorized card hold without charging the card.
+export const voidTransaction = async ({ transactionId }) => {
+  if (!transactionId) throw new PaymobRequestError('The authorized Paymob transaction is unknown');
+  return acceptanceTransactionRequest('/api/acceptance/void_refund/void', {
+    transaction_id: Number(transactionId) || String(transactionId),
   });
 };

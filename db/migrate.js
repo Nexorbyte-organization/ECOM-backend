@@ -74,6 +74,9 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "attendanceQrCreatedAt" TIMESTAMP WITH TIME ZONE`,
       // Events created before advance funding keep the post-event checkout they were created with.
       createEnumType('enum_events_fundingMode', ['prefund', 'pay_after']),
+      `ALTER TYPE "enum_events_fundingMode" ADD VALUE IF NOT EXISTS 'preauth'`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundingCardId" UUID`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "holdReminders" JSONB NOT NULL DEFAULT '{}'::jsonb`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundingMode" "enum_events_fundingMode" NOT NULL DEFAULT 'pay_after'`,
       `ALTER TABLE "events" ALTER COLUMN "fundingMode" SET DEFAULT 'prefund'`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundsReleasedAt" TIMESTAMP WITH TIME ZONE`,
@@ -170,10 +173,42 @@ export const migrateExistingSchema = async () => {
              AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = x.indexrelid)
          LOOP EXECUTE format('DROP INDEX IF EXISTS %I', item.index_name); END LOOP;
        END $$`,
+      // Card-hold events settle one day at a time, so uniqueness is per event day (-1 = no day).
+      `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "dayIndex" INTEGER NOT NULL DEFAULT -1`,
+      // Rebuild each unique index only while it still has its old, day-less definition.
+      `DO $$ BEGIN
+         IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'event_settlements_bulk_event_unique' AND indexdef NOT LIKE '%dayIndex%') THEN
+           DROP INDEX "event_settlements_bulk_event_unique";
+         END IF;
+         IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'event_settlements_individual_unique' AND indexdef NOT LIKE '%dayIndex%') THEN
+           DROP INDEX "event_settlements_individual_unique";
+         END IF;
+       END $$`,
       `CREATE UNIQUE INDEX IF NOT EXISTS "event_settlements_bulk_event_unique"
-         ON "event_settlements" ("eventId") WHERE "targetTalentId" IS NULL`,
+         ON "event_settlements" ("eventId", "dayIndex") WHERE "targetTalentId" IS NULL`,
       `CREATE UNIQUE INDEX IF NOT EXISTS "event_settlements_individual_unique"
-         ON "event_settlements" ("eventId", "targetTalentId") WHERE "targetTalentId" IS NOT NULL`,
+         ON "event_settlements" ("eventId", "targetTalentId", "dayIndex") WHERE "targetTalentId" IS NOT NULL`,
+    ]);
+  }
+  const [fundingTables] = await sequelize.query(`
+    SELECT to_regclass('public.event_fundings') IS NOT NULL AS "hasFundings"
+  `);
+  if (fundingTables[0]?.hasFundings) {
+    await runStatements([
+      createEnumType('enum_event_fundings_kind', ['advance', 'fee', 'day_hold']),
+      `ALTER TABLE "event_fundings" ADD COLUMN IF NOT EXISTS "kind" "enum_event_fundings_kind" NOT NULL DEFAULT 'advance'`,
+      `ALTER TABLE "event_fundings" ADD COLUMN IF NOT EXISTS "dayIndex" INTEGER NOT NULL DEFAULT -1`,
+      `ALTER TABLE "event_fundings" ADD COLUMN IF NOT EXISTS "capturedCents" INTEGER`,
+      `ALTER TABLE "event_fundings" ADD COLUMN IF NOT EXISTS "closeReason" VARCHAR(255)`,
+      `ALTER TYPE "enum_event_fundings_collectionStatus" ADD VALUE IF NOT EXISTS 'authorized'`,
+      `ALTER TYPE "enum_event_fundings_collectionStatus" ADD VALUE IF NOT EXISTS 'voided'`,
+      `ALTER TYPE "enum_event_fundings_collectionStatus" ADD VALUE IF NOT EXISTS 'closing'`,
+      // One checkout in progress per event, fee or day, so two clicks cannot charge twice.
+      `DO $$ BEGIN
+         IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'event_fundings_active_checkout_unique' AND indexdef NOT LIKE '%dayIndex%') THEN
+           DROP INDEX "event_fundings_active_checkout_unique";
+         END IF;
+       END $$`,
     ]);
   }
   const [lineTables] = await sequelize.query(`
