@@ -1903,7 +1903,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Attendance records with usher details"
+            "description": "Attendance records with usher details, one per usher and event day (dayIndex, date)"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -1918,7 +1918,7 @@
           "Organizers"
         ],
         "summary": "Staff check-in for an usher whose phone cannot check in",
-        "description": "Present or late only; a missed check-in becomes absent automatically when check-in closes,\nand nobody can mark an usher absent. Cannot change an usher's own (qr/code/location)\ncheck-in or turn present into late. Possible from the check-in window opening until the\npayments are released. Updates the good-event streak and auto-verification.\n",
+        "description": "Present or late only; a missed check-in becomes absent automatically when check-in closes,\nand nobody can mark an usher absent. Cannot change an usher's own (qr/code/location)\ncheck-in or turn present into late. Possible from the check-in window opening until the\npayments are released. Updates the good-event streak and auto-verification. On a\nmulti-day event attendance is per day: dayIndex picks the day (any day whose check-in has\nopened), defaulting to the current day or the latest day that has started.\n",
         "operationId": "markAttendance",
         "parameters": [
           {
@@ -1948,6 +1948,11 @@
                       "late"
                     ],
                     "example": "present"
+                  },
+                  "dayIndex": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Event day (0-based, in date order)"
                   },
                   "location": {
                     "type": "object",
@@ -5402,7 +5407,25 @@
           "eventDate": {
             "type": "string",
             "format": "date-time",
-            "example": "2026-08-20T19:00:00Z"
+            "description": "First event day. eventDate, startTime, and endTime mirror the first entry of days.",
+            "example": "2026-08-20T00:00:00Z"
+          },
+          "endDate": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last event day.",
+            "example": "2026-08-22T00:00:00Z"
+          },
+          "days": {
+            "type": "array",
+            "description": "Every day the event runs, in date order, each with its own hours.",
+            "items": {
+              "$ref": "#/components/schemas/EventDay"
+            }
+          },
+          "dayCount": {
+            "type": "integer",
+            "example": 3
           },
           "applicationDeadline": {
             "type": "string",
@@ -5918,15 +5941,39 @@
           }
         }
       },
+      "EventDay": {
+        "type": "object",
+        "required": [
+          "date",
+          "startTime",
+          "endTime"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-08-20"
+          },
+          "startTime": {
+            "type": "string",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "example": "19:00"
+          },
+          "endTime": {
+            "type": "string",
+            "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+            "description": "Must be after startTime on the same day.",
+            "example": "23:00"
+          }
+        }
+      },
       "CreateEventRequest": {
         "type": "object",
+        "description": "Send days, or eventDate/startTime/endTime for a one-day event.",
         "required": [
           "title",
           "category",
-          "eventDate",
           "applicationDeadline",
-          "startTime",
-          "endTime",
           "location",
           "requiredCount",
           "budget"
@@ -5950,15 +5997,24 @@
               "sport_event"
             ]
           },
+          "days": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 14,
+            "description": "One entry per event day (different dates, all within 30 days). The first day must not be in the past.",
+            "items": {
+              "$ref": "#/components/schemas/EventDay"
+            }
+          },
           "eventDate": {
             "type": "string",
             "format": "date-time",
-            "description": "Must be a future date."
+            "description": "One-day events without days. Must not be in the past."
           },
           "applicationDeadline": {
             "type": "string",
             "format": "date-time",
-            "description": "Must be before eventDate."
+            "description": "Must be before the first event day."
           },
           "startTime": {
             "type": "string",
@@ -5994,8 +6050,9 @@
           },
           "budget": {
             "type": "number",
-            "minimum": 0,
-            "example": 5000
+            "minimum": 600,
+            "description": "Pay per usher for each event day. Each usher is funded for every day (budget × days) and paid for the days they check in.",
+            "example": 800
           },
           "dressCode": {
             "type": "string",
@@ -6027,19 +6084,29 @@
               "sport_event"
             ]
           },
+          "days": {
+            "type": "array",
+            "description": "The full schedule. Dates and times stay editable until the event starts; the number of days only while the event is open, and days cannot be removed once ushers are hired.",
+            "items": {
+              "$ref": "#/components/schemas/EventDay"
+            }
+          },
           "eventDate": {
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "description": "One-day events only; multi-day events send days."
           },
           "applicationDeadline": {
             "type": "string",
             "format": "date-time"
           },
           "startTime": {
-            "type": "string"
+            "type": "string",
+            "description": "One-day events only."
           },
           "endTime": {
-            "type": "string"
+            "type": "string",
+            "description": "One-day events only."
           },
           "location": {
             "type": "string"
@@ -6062,7 +6129,8 @@
             ]
           },
           "budget": {
-            "type": "number"
+            "type": "number",
+            "description": "Pay per usher for each event day."
           },
           "dressCode": {
             "type": "string"

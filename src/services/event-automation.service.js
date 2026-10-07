@@ -37,13 +37,18 @@ export class EventAutomationService {
     }
 
     // Events whose next automatic step may be due: unreleased and from shortly before their
-    // funding deadline until a month after.
+    // funding deadline until a month after they end.
     static async dueEvents({ organizerId = null, talentId = null, eventIds = null, now = new Date(), limit = 100 } = {}) {
         return Event.findAll({
             where: {
                 status: { [Op.in]: ['open', 'confirmed', 'completed'] },
                 fundsReleasedAt: null,
-                eventDate: { [Op.between]: [new Date(now.getTime() - 30 * DAY_MS), new Date(now.getTime() + 3 * DAY_MS)] },
+                // From shortly before the first day until a month after the last day.
+                eventDate: { [Op.lte]: new Date(now.getTime() + 3 * DAY_MS) },
+                [Op.or]: [
+                    { endDate: { [Op.gte]: new Date(now.getTime() - 30 * DAY_MS) } },
+                    { endDate: null, eventDate: { [Op.gte]: new Date(now.getTime() - 30 * DAY_MS) } },
+                ],
                 ...(organizerId ? { organizerId } : {}),
                 ...(talentId ? { hiredTalents: { [Op.contains]: [talentId] } } : {}),
                 ...(eventIds ? { id: { [Op.in]: eventIds } } : {}),

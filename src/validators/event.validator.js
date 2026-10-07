@@ -1,5 +1,6 @@
 import joi from 'joi';
 import { eventActionRequestStatus, eventCategories, genderPreference, eventStatus } from '../utils/constant/enums.js';
+import { MAX_EVENT_DAYS } from '../utils/eventSchedule.js';
 
 const categorySchema = joi.string().custom((value, helpers) => {
     const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -13,14 +14,27 @@ const locationSchema = joi.object({
     accuracy: joi.number().min(0).allow(null).optional(),
 });
 
+const timeSchema = joi.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).messages({ 'string.pattern.base': 'Times must use the HH:mm format' });
+
+// Each day the event runs, with its own hours.
+const daysSchema = joi.array().items(joi.object({
+    date: joi.string().pattern(/^\d{4}-\d{2}-\d{2}$/).required().messages({ 'string.pattern.base': 'Event day dates must use the YYYY-MM-DD format' }),
+    startTime: timeSchema.required(),
+    endTime: timeSchema.required(),
+})).min(1).max(MAX_EVENT_DAYS);
+
+// A one-day event may still send eventDate/startTime/endTime instead of `days`.
+const requiredWithoutDays = (schema) => schema.when('days', { is: joi.exist(), then: joi.optional(), otherwise: joi.required() });
+
 export class EventValidator {
     static create = joi.object({
         title: joi.string().min(3).max(100).required(),
         category: categorySchema.required(),
-        eventDate: joi.date().required(),
-        applicationDeadline: joi.date().less(joi.ref('eventDate')).required(),
-        startTime: joi.string().required(),
-        endTime: joi.string().required(),
+        days: daysSchema.optional(),
+        eventDate: requiredWithoutDays(joi.date()),
+        applicationDeadline: joi.date().required(),
+        startTime: requiredWithoutDays(joi.string()),
+        endTime: requiredWithoutDays(joi.string()),
         location: joi.string().required(),
         gatheringLocation: joi.string().allow('').optional(),
         photo: joi.alternatives().try(joi.string(), joi.object()).optional(),
@@ -45,6 +59,7 @@ export class EventValidator {
     static update = joi.object({
         title: joi.string().min(3).max(100).optional(),
         category: categorySchema.optional(),
+        days: daysSchema.optional(),
         eventDate: joi.date().optional(),
         applicationDeadline: joi.date().optional(),
         startTime: joi.string().optional(),
@@ -103,6 +118,8 @@ export class AttendanceValidator {
     // Staff can only check someone in. A missed check-in becomes absent automatically.
     static mark = joi.object({
         talentId: joi.string().uuid().required(),
+        // The event day to check the usher in for; defaults to the current (or latest started) day.
+        dayIndex: joi.number().integer().min(0).max(MAX_EVENT_DAYS - 1).optional(),
         status: joi.string().valid('present', 'late').required(),
         location: locationSchema.optional(),
     }).required();

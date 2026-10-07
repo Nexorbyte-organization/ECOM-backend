@@ -1,6 +1,6 @@
 // Business rules for advance event funding, kept free of database access so they can be tested
 // directly. Amounts are integer piasters (cents).
-import { eventEndsAt, eventStartsAt } from '../utils/eventSchedule.js';
+import { eventDayCount, eventEndsAt, eventStartsAt } from '../utils/eventSchedule.js';
 import { calculateSettlementLineAmounts, splitPlatformFee } from './settlement.service.js';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -26,17 +26,13 @@ export const PAY_AFTER_OVERDUE_DAYS = 7;
 
 export const PAYABLE_ATTENDANCE = ['present', 'late'];
 
-export const perUsherGrossCents = (budget) => calculateSettlementLineAmounts(budget).grossAmountCents;
+export { eventDayCount };
 
-// Calendar days an event runs; an overnight event that ends before 24 hours counts as one day.
-export const eventDayCount = (event) => {
-  const startsAt = eventStartsAt(event);
-  const endsAt = eventEndsAt(event);
-  if (!startsAt || !endsAt) return 1;
-  return Math.max(1, Math.ceil((endsAt.getTime() - startsAt.getTime()) / DAY_MS));
-};
+// `budget` is the pay per usher for each event day; an usher's full pay covers every day.
+export const perUsherDayCents = (event) => calculateSettlementLineAmounts(event.budget).grossAmountCents;
+export const perUsherGrossCents = (event) => perUsherDayCents(event) * eventDayCount(event);
 
-export const minimumBudget = (event) => MIN_PAY_PER_DAY_EGP * eventDayCount(event);
+export const minimumBudget = () => MIN_PAY_PER_DAY_EGP;
 
 export const releaseDueAt = (event) => {
   const endsAt = eventEndsAt(event);
@@ -45,7 +41,7 @@ export const releaseDueAt = (event) => {
 
 export const fundingRequiredCents = (event) => {
   const hiredCount = (event.hiredTalents || []).length;
-  return hiredCount ? hiredCount * perUsherGrossCents(event.budget) : 0;
+  return hiredCount ? hiredCount * perUsherGrossCents(event) : 0;
 };
 
 export const fundingDeadline = (event) => {
@@ -111,22 +107,35 @@ export const planCancellation = ({ fundedCents, hiredTalentIds, perUsherCents, r
   };
 };
 
-// Decides how held funding is paid out after the event. Attendance is final by then: anyone
-// without a present or late record did not check in. The platform fee is earned for every booked
-// usher, so a no-show returns only their wage; skipping check-in therefore saves nothing.
-export const planRelease = ({ hiredTalentIds, attendanceByTalent, perUsherCents, fundedCents }) => {
+// Decides how held funding is paid out after the event. Attendance is final by then: a day without
+// a present or late record was not worked. Each usher is paid for the days they checked in. The
+// platform fee is earned for every booked day, so a missed day returns only its wage; skipping
+// check-in therefore saves nothing. `attendanceByTalent` maps an usher to their attendance records
+// (or a single record for a one-day event); `perUsherCents` is the pay for one day.
+export const planRelease = ({ hiredTalentIds, attendanceByTalent, perUsherCents, fundedCents, dayCount = 1 }) => {
   const ushers = [...new Set(hiredTalentIds || [])];
   const payable = [];
   const noShows = [];
   for (const talentId of ushers) {
-    const status = attendanceByTalent.get(talentId)?.status;
-    if (PAYABLE_ATTENDANCE.includes(status)) payable.push({ talentId, attendanceStatus: status, ...splitPlatformFee(perUsherCents) });
-    else {
-      const { platformFeeCents, usherAmountCents } = splitPlatformFee(perUsherCents);
-      noShows.push({ talentId, feeCents: platformFeeCents, wageCents: usherAmountCents });
+    const records = [attendanceByTalent.get(talentId) || []].flat();
+    const attended = records.filter((record) => PAYABLE_ATTENDANCE.includes(record.status)
+      && Number(record.dayIndex || 0) < dayCount);
+    const attendedDays = new Set(attended.map((record) => Number(record.dayIndex || 0))).size;
+    const missedDays = dayCount - attendedDays;
+    if (attendedDays) {
+      payable.push({
+        talentId,
+        attendanceStatus: attended.some((record) => record.status === 'late') ? 'late' : 'present',
+        attendedDays,
+        ...splitPlatformFee(perUsherCents * attendedDays),
+      });
+    }
+    if (missedDays) {
+      const { platformFeeCents, usherAmountCents } = splitPlatformFee(perUsherCents * missedDays);
+      noShows.push({ talentId, missedDays, feeCents: platformFeeCents, wageCents: usherAmountCents });
     }
   }
-  const hiredCents = ushers.length * perUsherCents;
+  const hiredCents = ushers.length * perUsherCents * dayCount;
   const noShowFeeCents = noShows.reduce((total, line) => total + line.feeCents, 0);
   const noShowWageCents = noShows.reduce((total, line) => total + line.wageCents, 0);
   const surplusCents = Math.max(0, fundedCents - hiredCents);

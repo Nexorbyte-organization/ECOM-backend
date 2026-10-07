@@ -57,18 +57,20 @@ export async function checkAndAutoVerify(userId) {
     const records = eventIds.length
         ? await Attendance.findAll({ where: { talentId: userId, eventId: { [Op.in]: eventIds } }, attributes: ['eventId', 'status'] })
         : [];
+    // Records are per event day: reliability counts days, while event totals count each event once.
     const attended = records.filter((record) => ['present', 'late'].includes(record.status));
-    const organizations = attended.length
+    const attendedEventIds = [...new Set(attended.map((record) => record.eventId))];
+    const organizations = attendedEventIds.length
         ? new Set((await Event.findAll({
-            where: { id: { [Op.in]: attended.map((record) => record.eventId) } },
+            where: { id: { [Op.in]: attendedEventIds } },
             attributes: ['organizerId'],
             paranoid: false,
         })).map((event) => event.organizerId)).size
         : 0;
 
-    user.completedEventsCount = attended.length;
+    user.completedEventsCount = attendedEventIds.length;
     user.reliabilityScore = records.length > 0 ? Math.round((attended.length / records.length) * 100) : 100;
-    if (qualifiesForVerification({ attendedEvents: attended.length, rating: user.rate || 0, organizations })) {
+    if (qualifiesForVerification({ attendedEvents: attendedEventIds.length, rating: user.rate || 0, organizations })) {
         user.isVerified = true;
     }
     await user.save();

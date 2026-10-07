@@ -22,9 +22,9 @@ import { eventForTalent } from '../utils/eventVisibility.js';
 import { maskPaymentMethods, publicTalent, withoutSecrets } from '../utils/publicTalent.js';
 import { canViewTalentPaymentMethods } from '../utils/talentVisibility.js';
 import { sequelize } from '../../db/connection.js';
-import { hasEventStarted } from '../utils/eventSchedule.js';
+import { eventDayCount, hasEventStarted } from '../utils/eventSchedule.js';
 import { FundingService } from '../services/funding.service.js';
-import { AttendanceService } from '../services/attendance.service.js';
+import { AttendanceService, summarizeAttendance } from '../services/attendance.service.js';
 import { EventAutomationService } from '../services/event-automation.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
@@ -122,9 +122,9 @@ export class UsherController {
             : [];
 
         const history = await Promise.all(events.map(async (event) => {
-            const attendance = await Attendance.findOne({ where: { eventId: event.id, talentId: id } });
+            const attendance = await Attendance.findAll({ where: { eventId: event.id, talentId: id } });
             const review = await Review.findOne({ where: { eventId: event.id, reviewedUserId: id } });
-            return { event: eventForTalent(event), attendanceStatus: attendance?.status || null, rating: review?.rating || null, comment: review?.comment || null };
+            return { event: eventForTalent(event), ...summarizeAttendance(attendance, eventDayCount(event)), rating: review?.rating || null, comment: review?.comment || null };
         }));
 
         const reviews = await Review.findAll({ where: { reviewedUserId: id }, order: [['createdAt', 'DESC']] });
@@ -282,7 +282,11 @@ export class UsherController {
 
         const hired = application?.status === 'accepted';
         const data = eventForTalent(event, hired, req.authUser.id);
-        if (hired) data.paymentProtection = await FundingService.protectionFor(event);
+        if (hired) {
+            data.paymentProtection = await FundingService.protectionFor(event);
+            const attendance = await Attendance.findAll({ where: { eventId: event.id, talentId: req.authUser.id } });
+            Object.assign(data, summarizeAttendance(attendance, eventDayCount(event)));
+        }
         if (application?.status === 'standby') data.standbyPosition = await StandbyService.positionOf(application);
         return res.status(200).json({ success: true, data });
     }
@@ -298,13 +302,15 @@ export class UsherController {
             eventId: req.body.eventId,
             location: req.body.location,
         });
+        // On a multi-day event the usher checks in again each day.
+        const day = eventDayCount(event) > 1 ? ` for day ${attendance.dayIndex + 1}` : '';
         return res.status(200).json({
             success: true,
-            message: alreadyCheckedIn ? 'You are already checked in'
-                : attendance.status === 'late' ? 'Attendance confirmed (late arrival)' : 'Attendance confirmed',
+            message: alreadyCheckedIn ? `You are already checked in${day}`
+                : attendance.status === 'late' ? `Attendance confirmed${day} (late arrival)` : `Attendance confirmed${day}`,
             data: {
                 attendance,
-                event: { id: event.id, title: event.title, eventDate: event.eventDate },
+                event: { id: event.id, title: event.title, eventDate: event.eventDate, dayCount: eventDayCount(event) },
                 alreadyCheckedIn,
             },
         });
@@ -418,9 +424,9 @@ export class UsherController {
         }));
 
         if (filter === 'upcoming') {
-            enriched = enriched.filter(a => a.event && new Date(a.event.eventDate) >= now);
+            enriched = enriched.filter(a => a.event && new Date(a.event.endDate || a.event.eventDate) >= now);
         } else if (filter === 'past') {
-            enriched = enriched.filter(a => a.event && new Date(a.event.eventDate) < now);
+            enriched = enriched.filter(a => a.event && new Date(a.event.endDate || a.event.eventDate) < now);
         }
 
         const total = enriched.length;
@@ -444,12 +450,12 @@ export class UsherController {
 
         const history = await Promise.all(applications.map(async (app) => {
             const event = await Event.findByPk(app.eventId);
-            const attendance = await Attendance.findOne({ where: { eventId: app.eventId, talentId } });
+            const attendance = await Attendance.findAll({ where: { eventId: app.eventId, talentId } });
             const review = await Review.findOne({ where: { eventId: app.eventId, reviewedUserId: talentId } });
             return {
                 event: eventForTalent(event, app.status === 'accepted'),
                 applicationStatus: app.status,
-                attendanceStatus: attendance?.status || null,
+                ...summarizeAttendance(attendance, event ? eventDayCount(event) : 1),
                 rating: review?.rating || null,
                 comment: review?.comment || null,
             };
@@ -805,7 +811,8 @@ export class UsherController {
                 ? Event.findAll({
                     where: {
                         id: { [Op.in]: acceptedEventIds },
-                        eventDate: { [Op.gte]: now },
+                        // A multi-day event stays upcoming until its last day.
+                        [Op.or]: [{ eventDate: { [Op.gte]: now } }, { endDate: { [Op.gte]: now } }],
                         status: { [Op.in]: ['open', 'confirmed'] },
                     },
                     order: [['eventDate', 'ASC']],

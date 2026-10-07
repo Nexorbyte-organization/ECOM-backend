@@ -25,6 +25,12 @@ export const Attendance = sequelize.define(
       allowNull: false,
       references: { model: 'users', key: 'id' },
     },
+    // Which event day (0-based, in date order) this record is for; ushers check in every day.
+    dayIndex: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     status: {
       type: DataTypes.ENUM(...Object.values(attendanceStatus)),
       allowNull: false,
@@ -52,7 +58,7 @@ export const Attendance = sequelize.define(
   {
     timestamps: true,
     tableName: 'attendances',
-    indexes: [{ unique: true, fields: ['eventId', 'talentId'] }],
+    indexes: [{ unique: true, fields: ['eventId', 'talentId', 'dayIndex'], name: 'attendances_event_talent_day_unique' }],
   },
 );
 
