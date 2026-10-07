@@ -50,15 +50,23 @@ usherRouter.get('/events/history', ...auth, ErrorHandler.asyncHandler(UsherContr
 usherRouter.get('/events/:id', ...auth, ErrorHandler.asyncHandler(UsherController.getEventById));
 usherRouter.get('/events/:id/map', ...auth, ErrorHandler.asyncHandler(EventMapController.getUsherMap));
 
-// Event-day check-in from an organizer-displayed QR code.
-usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkInWithAttendanceQr));
+// Pay held because the usher was marked absent at a prefunded event, and disputes of that mark.
+
+// Event-day check-in: scan the staff QR, type its 6-digit code, or "I'm here" by location.
+usherRouter.post('/attendance/check-in', ...auth, ValidationMiddleware.isValid(AttendanceValidator.checkIn), ErrorHandler.asyncHandler(UsherController.checkIn));
+
+// US-211: Accept or decline a direct booking invitation
+usherRouter.patch('/applications/:applicationId/respond', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.respond), ErrorHandler.asyncHandler(UsherController.respondToBookingInvitation));
+
+// Leave an event's standby list. Standby is unpaid, so leaving carries no penalty.
+usherRouter.patch('/applications/:applicationId/leave-standby', ...auth, ErrorHandler.asyncHandler(UsherController.leaveStandby));
 
 // US-107: Excuse from an accepted event
 usherRouter.patch('/applications/:applicationId/excuse', ...auth, completeProfile, ErrorHandler.asyncHandler(UsherController.excuseFromEvent));
 
 // US-109: Refer a talent to an event (with schema validation)
 usherRouter.post('/refer', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.refer), ErrorHandler.asyncHandler(UsherController.referTalent));
-usherRouter.post('/referral-invites', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.apply), ErrorHandler.asyncHandler(UsherController.createReferralInvite));
+usherRouter.post('/referral-invites', ...auth, completeProfile, ValidationMiddleware.isValid(ApplicationValidator.referralInvite), ErrorHandler.asyncHandler(UsherController.createReferralInvite));
 usherRouter.post('/referral-invites/:token/redeem', ...auth, ErrorHandler.asyncHandler(UsherController.redeemReferralInvite));
 
 // US-109-EXT: Manage incoming referrals

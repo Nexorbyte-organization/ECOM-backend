@@ -6,6 +6,11 @@ const runStatements = async (statements) => {
   }
 };
 
+// Creates a Sequelize-named enum type for a column added to an existing table.
+const createEnumType = (name, values) => `DO $$ BEGIN
+    CREATE TYPE "${name}" AS ENUM (${values.map((value) => `'${value}'`).join(', ')});
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$`;
+
 export const migrateExistingSchema = async () => {
   if (sequelize.getDialect() !== 'postgres') return;
 
@@ -48,6 +53,9 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "whatsappConsentGivenAt" TIMESTAMP WITH TIME ZONE`,
       `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "refreshTokenHash" VARCHAR(255)`,
       `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "refreshTokenExpiresAt" TIMESTAMP WITH TIME ZONE`,
+      createEnumType('enum_users_paymentTierOverride', ['standard', 'trusted']),
+      `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "paymentTierOverride" "enum_users_paymentTierOverride"`,
+      `ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "suspendedUntil" TIMESTAMP WITH TIME ZONE`,
     ]);
   }
 
@@ -64,7 +72,53 @@ export const migrateExistingSchema = async () => {
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "whatsappGroupId" VARCHAR(255)`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "whatsappGroupLink" VARCHAR(255)`,
       `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "attendanceQrCreatedAt" TIMESTAMP WITH TIME ZONE`,
+      // Events created before advance funding keep the post-event checkout they were created with.
+      createEnumType('enum_events_fundingMode', ['prefund', 'pay_after']),
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundingMode" "enum_events_fundingMode" NOT NULL DEFAULT 'pay_after'`,
+      `ALTER TABLE "events" ALTER COLUMN "fundingMode" SET DEFAULT 'prefund'`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "fundsReleasedAt" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLatitude" DOUBLE PRECISION`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "venueLongitude" DOUBLE PRECISION`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "noShowFeeCents" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE "events" ADD COLUMN IF NOT EXISTS "standbyCount" INTEGER NOT NULL DEFAULT 0`,
     ]);
+  }
+
+  const [applicationTables] = await sequelize.query(`
+    SELECT to_regclass('public.applications') IS NOT NULL AS "hasApplications"
+  `);
+  if (applicationTables[0]?.hasApplications) {
+    await runStatements([
+      ...['standby', 'withdrawn'].map((value) => `ALTER TYPE "enum_applications_status" ADD VALUE IF NOT EXISTS '${value}'`),
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyOk" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbyInvite" BOOLEAN NOT NULL DEFAULT FALSE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "standbySince" TIMESTAMP WITH TIME ZONE`,
+      `ALTER TABLE "applications" ADD COLUMN IF NOT EXISTS "promotedAt" TIMESTAMP WITH TIME ZONE`,
+    ]);
+  }
+
+  const [attendanceTables] = await sequelize.query(`
+    SELECT to_regclass('public.attendances') IS NOT NULL AS "hasAttendance"
+  `);
+  if (attendanceTables[0]?.hasAttendance) {
+    await runStatements([
+      createEnumType('enum_attendances_checkInMethod', ['qr', 'manual', 'admin']),
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInMethod" "enum_attendances_checkInMethod" NOT NULL DEFAULT 'manual'`,
+      ...['code', 'location', 'staff', 'auto'].map((value) => `ALTER TYPE "enum_attendances_checkInMethod" ADD VALUE IF NOT EXISTS '${value}'`),
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInLatitude" DOUBLE PRECISION`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInLongitude" DOUBLE PRECISION`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "checkInPointId" UUID`,
+      `ALTER TABLE "attendances" ADD COLUMN IF NOT EXISTS "recordedBy" UUID`,
+    ]);
+  }
+
+  const [creditTypes] = await sequelize.query(`
+    SELECT 1 FROM pg_type WHERE typname = 'enum_organizer_credit_entries_type' LIMIT 1
+  `);
+  if (creditTypes.length) {
+    await runStatements(['no_show_refund', 'card_refund_failed'].map((value) => (
+      `ALTER TYPE "enum_organizer_credit_entries_type" ADD VALUE IF NOT EXISTS '${value}'`
+    )));
   }
 
   const [settlementTables] = await sequelize.query(`
@@ -74,6 +128,8 @@ export const migrateExistingSchema = async () => {
     await runStatements([
       `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "selectedCardId" UUID`,
       `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "targetTalentId" UUID REFERENCES "users"("id")`,
+      createEnumType('enum_event_settlements_fundingSource', ['checkout', 'prefund']),
+      `ALTER TABLE "event_settlements" ADD COLUMN IF NOT EXISTS "fundingSource" "enum_event_settlements_fundingSource" NOT NULL DEFAULT 'checkout'`,
       `DO $$ DECLARE item RECORD; BEGIN
          FOR item IN SELECT c.conname FROM pg_constraint c
            JOIN pg_class t ON t.oid = c.conrelid
@@ -103,6 +159,10 @@ export const migrateExistingSchema = async () => {
     await runStatements([
       `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutRetrySafe" BOOLEAN NOT NULL DEFAULT FALSE`,
       `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "payoutAttempt" INTEGER NOT NULL DEFAULT 0`,
+      createEnumType('enum_settlement_lines_lineType', ['attendance', 'cancellation_compensation', 'dispute_award']),
+      `ALTER TABLE "settlement_lines" ADD COLUMN IF NOT EXISTS "lineType" "enum_settlement_lines_lineType" NOT NULL DEFAULT 'attendance'`,
+      `ALTER TABLE "settlement_lines" ALTER COLUMN "attendanceStatus" DROP NOT NULL`,
+      `ALTER TYPE "enum_settlement_lines_payoutStatus" ADD VALUE IF NOT EXISTS 'awaiting_method'`,
       `DO $$ DECLARE item RECORD; BEGIN
          FOR item IN SELECT c.conname FROM pg_constraint c
            JOIN pg_class t ON t.oid = c.conrelid

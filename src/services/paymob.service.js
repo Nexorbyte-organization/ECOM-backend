@@ -204,6 +204,30 @@ export const buildIntentionPayload = ({ settlement, event, organizer, lines, con
   };
 };
 
+// One checkout for the part of an event's advance funding not covered by organization credit.
+export const buildFundingIntentionPayload = ({ funding, event, organizer, config, cardToken }) => ({
+  amount: funding.amountCents,
+  currency: funding.currency,
+  payment_methods: cardToken ? [getCardEnrollmentIntegrationId(config)] : config.paymentMethods,
+  items: [{
+    name: `${event.title} — usher pay in advance`.slice(0, 255),
+    amount: funding.amountCents,
+    description: 'OO-Ushers event funding, held until the event payments are released',
+    quantity: 1,
+  }],
+  billing_data: billingData(organizer),
+  ...(cardToken ? { card_tokens: [cardToken] } : {}),
+  extras: {
+    funding_id: funding.id,
+    event_id: event.id,
+    organizer_id: funding.organizerId,
+  },
+  special_reference: funding.specialReference,
+  expiration: 3600,
+  notification_url: `${config.backendUrl}/payments/paymob/webhook`,
+  redirection_url: `${config.frontendUrl}/provider/payments/result?fundingId=${funding.id}`,
+});
+
 export const buildCardEnrollmentPayload = ({ enrollment, organizer, config, integrationId }) => ({
   amount: 1000,
   currency: 'EGP',
@@ -278,6 +302,11 @@ export const createPaymobIntention = async ({ settlement, event, organizer, line
   return postIntention(buildIntentionPayload({ settlement, event, organizer, lines, config, cardToken }), config);
 };
 
+export const createFundingIntention = async ({ funding, event, organizer, cardToken }) => {
+  const config = getPaymobTestConfig();
+  return postIntention(buildFundingIntentionPayload({ funding, event, organizer, config, cardToken }), config);
+};
+
 export const getCardEnrollmentIntegrationId = () => {
   const configured = process.env.PAYMOB_CARD_INTEGRATION_ID?.trim();
   const integrationId = Number(configured);
@@ -287,16 +316,21 @@ export const getCardEnrollmentIntegrationId = () => {
   return integrationId;
 };
 
-export const inquireCardTokens = async (orderId) => {
-  const apiKey = process.env.PAYMOB_API_KEY?.trim();
-  if (!apiKey) return [];
-  const config = getPaymobTestConfig();
+const requestInquiryAuthToken = async (config, apiKey) => {
   const auth = await requestJson(`${config.baseUrl}/api/auth/tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ api_key: apiKey }),
   });
   if (!auth.token) throw new PaymobRequestError('Paymob did not return an inquiry auth token');
+  return auth.token;
+};
+
+export const inquireCardTokens = async (orderId) => {
+  const apiKey = process.env.PAYMOB_API_KEY?.trim();
+  if (!apiKey) return [];
+  const config = getPaymobTestConfig();
+  const auth = { token: await requestInquiryAuthToken(config, apiKey) };
   const tokens = await requestJson(`${config.baseUrl}/api/acceptance/order_card_tokens`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -307,8 +341,39 @@ export const inquireCardTokens = async (orderId) => {
   return tokens;
 };
 
+// Returns the order's transaction, null when Paymob has no transaction for the order,
+// or undefined when inquiry is not configured.
+export const inquireOrderTransaction = async (orderId) => {
+  const apiKey = process.env.PAYMOB_API_KEY?.trim();
+  if (!apiKey || !orderId) return undefined;
+  const config = getPaymobTestConfig();
+  const authToken = await requestInquiryAuthToken(config, apiKey);
+  const transaction = await requestJson(`${config.baseUrl}/api/ecommerce/orders/transaction_inquiry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auth_token: authToken, order_id: Number(orderId) }),
+  }, true);
+  if (transaction === null || !transaction?.id) return null;
+  return transaction;
+};
+
 export const createCardEnrollmentIntention = async ({ enrollment, organizer }) => {
   const config = getPaymobTestConfig();
   const integrationId = getCardEnrollmentIntegrationId();
   return postIntention(buildCardEnrollmentPayload({ enrollment, organizer, config, integrationId }), config);
+};
+
+// Refunds part or all of a paid test transaction to the card that paid it. Returns Paymob's
+// refund transaction.
+export const refundTransaction = async ({ transactionId, amountCents }) => {
+  if (!transactionId) throw new PaymobRequestError('The original Paymob transaction is unknown');
+  const config = getPaymobTestConfig();
+  return requestJson(`${config.baseUrl}/api/acceptance/void_refund/refund`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Token ${config.secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ transaction_id: Number(transactionId) || String(transactionId), amount_cents: amountCents }),
+  });
 };

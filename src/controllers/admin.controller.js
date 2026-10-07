@@ -1,6 +1,7 @@
 import { Op } from 'sequelize';
 import { sequelize } from '../../db/connection.js';
-import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment } from '../../db/index.js';
+import { User, Event, Application, Attendance, Review, Referral, EventActionRequest, Notification, EventSettlement, OrganizerCard, OrganizerCardEnrollment, FundingRefund, SettlementLine, OrganizationFavorite } from '../../db/index.js';
+import { OrganizerCreditService } from '../services/organizer-credit.service.js';
 import { AppError } from '../utils/appError.js';
 import { messages } from '../utils/constant/messages.js';
 import { ApiFeature } from '../utils/apiFeature.js';
@@ -8,11 +9,17 @@ import { HashService } from '../utils/hashAndcompare.js';
 import { EventService } from '../services/event.service.js';
 import { NotificationService } from '../services/notification.service.js';
 import { normalizeRole } from '../utils/normalization.js';
+import { eventStatus } from '../utils/constant/enums.js';
 import { findAvailableOrganization, issueSession } from '../services/session.service.js';
+import { getAnalytics } from '../services/analytics.service.js';
 
 const SAFE_USER_ATTRS = { exclude: ['password', 'otp', 'otpExpiry', 'otpAttempts', 'lastOtpRequest', 'otpVerified', 'refreshTokenHash', 'refreshTokenExpiresAt'] };
 
 export class AdminController {
+    static async getAnalytics(req, res) {
+        const data = await getAnalytics();
+        return res.status(200).json({ success: true, data });
+    }
 
     static async switchToOrganization(req, res, next) {
         const { id } = req.params;
@@ -126,7 +133,10 @@ export class AdminController {
         const { search, status } = req.query;
         const where = {};
 
-        if (status && status !== 'all') where.status = status;
+        if (status && status !== 'all') {
+            if (!Object.values(eventStatus).includes(status)) return next(new AppError('Invalid event status filter', 400));
+            where.status = status;
+        }
 
         if (search) {
             where[Op.or] = [
@@ -246,11 +256,8 @@ export class AdminController {
         const { id } = req.params;
         const { status } = req.body;
 
-        const event = await Event.findByPk(id);
-        if (!event) return next(new AppError(messages.event.notfound, 404));
-
-        event.status = status;
-        await event.save();
+        const { event, notifyUserIds, fundingResult } = await EventService.changeStatus(id, status);
+        await EventService.notifyCancellation(event, notifyUserIds, fundingResult);
 
         return res.status(200).json({
             success: true,
@@ -342,6 +349,8 @@ export class AdminController {
         const user = await User.findByPk(id);
         if (!user) return next(new AppError(messages.user.notfound, 404));
         if (user.role === 'admin') return next(new AppError('Admin accounts cannot be deleted', 403));
+        const moneyBlocker = await AdminController.unsettledMoneyFor(user);
+        if (moneyBlocker) return next(new AppError(moneyBlocker, 409));
 
         await sequelize.transaction(async (transaction) => {
             if (user.role === 'organizer') {
@@ -379,6 +388,9 @@ export class AdminController {
                 });
                 await Promise.all(hiredEvents.map(async (event) => {
                     event.hiredTalents = (event.hiredTalents || []).filter((userId) => userId !== id);
+                    event.mapPins = (event.mapPins || []).map((pin) => ({
+                        ...pin, usherIds: (pin.usherIds || []).filter((userId) => userId !== id),
+                    }));
                     await event.save({ transaction });
                 }));
             }
@@ -390,6 +402,7 @@ export class AdminController {
                 Referral.destroy({ where: { [Op.or]: [{ referrerTalentId: id }, { referredTalentId: id }] }, transaction }),
                 EventActionRequest.destroy({ where: { organizerId: id }, transaction }),
                 Notification.destroy({ where: { userId: id }, transaction }),
+                OrganizationFavorite.destroy({ where: { [Op.or]: [{ organizerId: id }, { talentId: id }] }, transaction }),
             ]);
 
             await Promise.all([
@@ -404,6 +417,23 @@ export class AdminController {
             success: true,
             message: messages.user.deleteSuccessfully,
         });
+    }
+
+    // Deleting an account must not strand money the platform holds for it or owes it.
+    static async unsettledMoneyFor(user) {
+        if (user.role === 'organizer') {
+            const [balance, pendingRefunds] = await Promise.all([
+                OrganizerCreditService.balance(user.id),
+                FundingRefund.count({ where: { organizerId: user.id, status: { [Op.in]: ['pending', 'processing'] } } }),
+            ]);
+            if (balance !== 0) return `This organization has ${balance / 100} EGP of credit. Settle it before deleting the account.`;
+            if (pendingRefunds) return 'This organization has a card refund still being processed.';
+        }
+        if (user.role === 'usher') {
+            const waiting = await SettlementLine.count({ where: { talentId: user.id, payoutStatus: { [Op.in]: ['awaiting_method', 'queued', 'processing'] } } });
+            if (waiting) return 'This usher still has event pay waiting to be sent.';
+        }
+        return null;
     }
 
     // US-300: Admin dashboard stats
@@ -478,8 +508,8 @@ export class AdminController {
         const eventTitle = event?.title || 'Event';
         if (req.body.decision === 'approved' && event) {
             if (request.requestType === 'cancel') {
-                event.status = 'cancelled';
-                await event.save();
+                const { event: cancelled, notifyUserIds, fundingResult } = await EventService.changeStatus(event.id, 'cancelled');
+                await EventService.notifyCancellation(cancelled, notifyUserIds, fundingResult);
             } else {
                 await EventService.deleteWithRelations(event.id, { preserveActionRequests: true });
             }

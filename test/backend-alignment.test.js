@@ -132,15 +132,38 @@ test('all frontend-alignment route groups are registered', async () => {
     }
   }
 
-  assert.equal(routes.size, 110);
+  assert.equal(routes.size, 132);
+  assert.ok(routes.has('organizerRouter:GET /analytics'));
+  assert.ok(routes.has('adminRouter:GET /analytics'));
+  assert.ok(routes.has('organizerRouter:POST /events/:id/funding'));
+  assert.ok(routes.has('organizerRouter:POST /events/:id/release-payments'));
+  assert.ok(routes.has('paymentRouter:GET /fundings/:fundingId'));
+  // Attendance proof replaces disputes, and returned money goes back to the card, not a bank.
+  assert.ok(!routes.has('organizerRouter:POST /credit/withdrawals'));
+  assert.ok(!routes.has('usherRouter:POST /payments/holds/:holdId/dispute'));
+  assert.ok(!routes.has('adminRouter:PATCH /payments/holds/:holdId/resolve'));
+  assert.ok(!routes.has('adminRouter:POST /events/:id/release-payments'));
+  assert.ok(routes.has('adminRouter:PATCH /organizers/:id/payment-tier'));
+  assert.ok(routes.has('authRouter:POST /resend-verification'));
+  assert.ok(routes.has('organizerRouter:PATCH /events/:id/complete'));
+  assert.ok(routes.has('usherRouter:PATCH /applications/:applicationId/respond'));
+  assert.ok(routes.has('usherRouter:PATCH /applications/:applicationId/leave-standby'));
+  assert.ok(routes.has('organizerRouter:GET /favorite-talents'));
+  assert.ok(routes.has('organizerRouter:PUT /favorite-talents/:talentId'));
+  assert.ok(routes.has('organizerRouter:DELETE /favorite-talents/:talentId'));
+  assert.ok(routes.has('organizerRouter:GET /events/:id/last-team'));
+  assert.ok(routes.has('organizerRouter:POST /events/:id/rebook-last-team'));
   assert.ok(routes.has('adminRouter:POST /organizations/:id/switch'));
   assert.ok(routes.has('adminRouter:POST /organizations/stop'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/map'));
   assert.ok(routes.has('usherRouter:GET /events/:id/map'));
   assert.ok(routes.has('organizerRouter:GET /events/:id/attendance'));
-  assert.ok(routes.has('organizerRouter:POST /events/:id/attendance-qr'));
-  assert.ok(routes.has('organizerRouter:GET /events/:id/attendance-qr'));
-  assert.ok(routes.has('organizerRouter:POST /events/:id/action-requests'));
+  assert.ok(routes.has('organizerRouter:PUT /events/:id/check-in-points/me'));
+  assert.ok(routes.has('organizerRouter:GET /events/:id/check-in-points'));
+  assert.ok(routes.has('usherRouter:POST /attendance/check-in'));
+  // Organizations cannot cancel or delete events, directly or by request.
+  assert.ok(!routes.has('organizerRouter:POST /events/:id/action-requests'));
+  assert.ok(!routes.has('organizerRouter:DELETE /events/:id'));
   assert.ok(routes.has('adminRouter:PATCH /event-action-requests/:id'));
   assert.ok(routes.has('notificationRouter:PATCH /read-all'));
   assert.ok(routes.has('usherRouter:GET /profile/:id/reviews'));
@@ -181,15 +204,7 @@ test('all frontend-alignment route groups are registered', async () => {
   }).toJSON();
   assert.equal(eventJson._id, eventJson.id);
   assert.equal(eventJson.providerId, eventJson.organizerId);
-  assert.equal(eventJson.attendanceQrGenerated, false);
-
-  const eventWithQrJson = Event.build({
-    id: '43575802-c57f-451a-b3ed-086b55f90d4c',
-    organizerId: 'e31b7076-6ba3-499f-bbf4-561152bef806',
-    attendanceQrCreatedAt: new Date('2030-03-01T10:00:00.000Z'),
-  }).toJSON();
-  assert.equal(eventWithQrJson.attendanceQrGenerated, true);
-  assert.equal(eventWithQrJson.attendanceQrCreatedAt, undefined);
+  assert.equal(eventJson.noShowFeeCents, 0);
 
   const organizerJson = User.build({
     id: 'fed362c9-6d0f-4eab-a260-23289c3e4ba7',
@@ -200,4 +215,10 @@ test('all frontend-alignment route groups are registered', async () => {
     rate: 0,
   }).toJSON();
   assert.equal(organizerJson.autoAcceptHighRatedTalents, true);
+});
+
+test('sorting ignores secret, contact, and malformed fields', async () => {
+  const { ApiFeature } = await import('../src/utils/apiFeature.js');
+  const { order } = new ApiFeature({ sort: '-rate,password,refreshTokenHash,email,createdAt,"x" desc' }).sort().build();
+  assert.deepEqual(order, [['rate', 'DESC'], ['createdAt', 'ASC']]);
 });

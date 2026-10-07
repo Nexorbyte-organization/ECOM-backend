@@ -161,6 +161,11 @@ export const User = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    // Set automatically after repeated no-shows; the usher cannot take new work until it passes.
+    suspendedUntil: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
     // Talent stats
     totalRatings: {
       type: DataTypes.INTEGER,
@@ -217,6 +222,11 @@ export const User = sequelize.define(
       type: DataTypes.UUID,
       allowNull: true,
       references: { model: 'users', key: 'id' },
+    },
+    // Admin decision that replaces the automatic organization payment tier; null means automatic.
+    paymentTierOverride: {
+      type: DataTypes.ENUM('standard', 'trusted'),
+      allowNull: true,
     },
   },
   {

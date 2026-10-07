@@ -46,7 +46,9 @@ PAYMOB_PAYOUT_PASSWORD=
 
 ## Paymob Test Mode
 
-The organization settles an event only after it is completed. Every present or late usher receives a settlement line based on the event's per-usher budget. The system records 5% as the OO-Ushers transfer/platform fee and 95% as the usher's amount.
+New events are funded in advance: the organization pays the hired team's pay (organization credit first, then a Paymob checkout) before confirming the team, the money is held, and after the event the owner releases it. Present and late ushers are paid, absent ushers' pay is held for a 72-hour dispute window, and leftovers become organization credit. Admin cancellations refund 100%, 50%, or 0% to credit depending on how close to the start they happen, with the rest compensating hired ushers. Trusted organizations (three fully paid events and a clean record, or an admin override) may instead pay after the event through the settlement checkout below, which is also used by events created before advance funding.
+
+For pay-after events, the organization settles an event only after it is completed. Every present or late usher receives a settlement line based on the event's per-usher budget. The system records 5% as the OO-Ushers transfer/platform fee and 95% as the usher's amount.
 
 - Ushers with a supported wallet or complete bank payout account are queued for an automatic Paymob Payouts Sandbox transfer after the collection webhook succeeds.
 - Ushers without a supported payout account are marked `cash_due`. The Paymob checkout collects only their 5% platform fee; the organization pays their remaining 95% in cash and records it from the event settlement screen.

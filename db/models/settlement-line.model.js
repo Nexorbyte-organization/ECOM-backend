@@ -24,9 +24,15 @@ export const SettlementLine = sequelize.define(
       allowNull: false,
       references: { model: 'users', key: 'id' },
     },
+    // Null for cancellation compensation, which does not depend on attendance.
     attendanceStatus: {
       type: DataTypes.ENUM('present', 'late'),
+      allowNull: true,
+    },
+    lineType: {
+      type: DataTypes.ENUM('attendance', 'cancellation_compensation', 'dispute_award'),
       allowNull: false,
+      defaultValue: 'attendance',
     },
     grossAmountCents: {
       type: DataTypes.INTEGER,
@@ -62,7 +68,8 @@ export const SettlementLine = sequelize.define(
       allowNull: true,
     },
     payoutStatus: {
-      type: DataTypes.ENUM('cash_due', 'queued', 'processing', 'paid', 'failed'),
+      // awaiting_method: prefunded pay is held until the usher adds a supported payout account.
+      type: DataTypes.ENUM('cash_due', 'queued', 'processing', 'paid', 'failed', 'awaiting_method'),
       allowNull: false,
     },
     paymobPayoutTransactionId: {

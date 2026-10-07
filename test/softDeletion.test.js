@@ -14,7 +14,8 @@ const { UserController } = await import('../src/controllers/user.controller.js')
 const { PaymentController } = await import('../src/controllers/payment.controller.js');
 const { TokenService } = await import('../src/utils/token.js');
 const { calculateTransactionHmac, calculateCardTokenHmac } = await import('../src/services/paymob.service.js');
-const { User, Event, EventSettlement, SettlementLine, OrganizerCard, OrganizerCardEnrollment } = models;
+const { FundingService } = await import('../src/services/funding.service.js');
+const { User, Event, EventFunding, EventSettlement, SettlementLine, OrganizerCard, OrganizerCardEnrollment } = models;
 
 const response = () => ({
   status(code) { this.code = code; return this; },
@@ -94,6 +95,8 @@ test('organization deletion uses one transaction for staff, events and all depen
     transactionCalls++;
     return callback(transaction);
   });
+  t.mock.method(AdminController, 'unsettledMoneyFor', async () => null);
+  t.mock.method(FundingService, 'heldFundsBlockDeletion', async () => false);
   t.mock.method(User, 'findByPk', async () => ({
     id: 'organization-1', role: 'organizer',
     async destroy(options) { assert.equal(options.transaction, transaction); accountDeleted = true; },
@@ -137,6 +140,7 @@ test('organization deletion uses one transaction for staff, events and all depen
 test('a failed cascade rejects the transaction and does not delete the organization account', async (t) => {
   let accountDeleted = false;
   t.mock.method(sequelize, 'transaction', async (callback) => callback(transaction));
+  t.mock.method(AdminController, 'unsettledMoneyFor', async () => null);
   t.mock.method(User, 'findByPk', async () => ({ role: 'organizer', async destroy() { accountDeleted = true; } }));
   t.mock.method(Event, 'findAll', async () => [{ id: 'event-1' }]);
   t.mock.method(EventService, 'deleteWithRelations', async () => { throw new Error('Relation write failed'); });
@@ -144,8 +148,27 @@ test('a failed cascade rejects the transaction and does not delete the organizat
   assert.equal(accountDeleted, false);
 });
 
+test('an organization holding credit or held pay cannot be deleted', async (t) => {
+  let accountDeleted = false;
+  t.mock.method(User, 'findByPk', async () => ({ id: 'organization-1', role: 'organizer', async destroy() { accountDeleted = true; } }));
+  t.mock.method(AdminController, 'unsettledMoneyFor', async () => 'This organization has 50 EGP of credit.');
+  let error;
+  await AdminController.deleteUser({ params: { id: 'organization-1' }, authUser: { id: 'admin-1' } }, response(), value => { error = value; });
+  assert.equal(error.statusCode, 409);
+  assert.equal(accountDeleted, false);
+});
+
+test('an event holding unreleased advance funding must be cancelled before deletion', async (t) => {
+  t.mock.method(sequelize, 'transaction', async callback => callback(transaction));
+  t.mock.method(Event, 'findByPk', async () => ({ id: 'event-1' }));
+  t.mock.method(FundingService, 'heldFundsBlockDeletion', async () => true);
+  t.mock.method(Event, 'destroy', async () => { throw new Error('Event must not be deleted'); });
+  await assert.rejects(EventService.deleteWithRelations('event-1'), /Cancel it first/);
+});
+
 test('event deletion keeps resolved action history when requested and retains payment lines', async (t) => {
   t.mock.method(sequelize, 'transaction', async callback => callback(transaction));
+  t.mock.method(FundingService, 'heldFundsBlockDeletion', async () => false);
   t.mock.method(Event, 'findByPk', async () => ({ id: 'event-1' }));
   const deleted = [];
   for (const model of Object.values(models)) {
@@ -238,6 +261,7 @@ test('a valid payment callback reconciles an archived settlement without exposin
 test('late card-token callbacks cannot recreate a removed card', async (t) => {
   setPaymentEnvironment();
   t.mock.method(EventSettlement, 'findOne', async () => null);
+  t.mock.method(EventFunding, 'findOne', async () => null);
   t.mock.method(OrganizerCardEnrollment, 'findOne', async () => ({ organizerId: 'org-1' }));
   t.mock.method(User, 'findByPk', async () => ({ id: 'org-1' }));
   t.mock.method(OrganizerCard, 'findOne', async options => { assert.equal(options.paranoid, false); return { organizerId: 'org-1', deletedAt: new Date() }; });
