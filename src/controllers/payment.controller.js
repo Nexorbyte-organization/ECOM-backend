@@ -675,6 +675,8 @@ export class PaymentController {
     const allowedIntegrations = config.paymentMethods.map(String);
     const cardIntegrationId = process.env.PAYMOB_CARD_INTEGRATION_ID?.trim();
     if (cardIntegrationId) allowedIntegrations.push(cardIntegrationId);
+    const authIntegrationId = process.env.PAYMOB_AUTH_INTEGRATION_ID?.trim();
+    if (authIntegrationId) allowedIntegrations.push(authIntegrationId);
     if (!allowedIntegrations.includes(String(obj.integration_id))) {
       return next(new AppError('Unexpected Paymob Test Integration ID', 409));
     }

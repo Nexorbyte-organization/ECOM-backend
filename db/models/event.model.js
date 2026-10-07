@@ -156,14 +156,27 @@ export const Event = sequelize.define(
     },
     // prefund: the organization funds usher pay in advance and it is released after the event.
     // pay_after: a trusted organization pays through a post-event settlement checkout.
+    // preauth: the booking fee is charged up front and each day's usher wages are held on the
+    // organization's card shortly before the day and captured after it.
     fundingMode: {
-      type: DataTypes.ENUM('prefund', 'pay_after'),
+      type: DataTypes.ENUM('prefund', 'pay_after', 'preauth'),
       allowNull: false,
       defaultValue: 'prefund',
     },
     fundsReleasedAt: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    // preauth events: the saved card the day holds are placed on, and when the organization was
+    // last reminded to place each day's hold ({ [dayIndex]: ISO time }).
+    fundingCardId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
+    holdReminders: {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: {},
     },
     // Platform fee kept for booked ushers who did not attend, recorded when payments are released.
     noShowFeeCents: {

@@ -12,6 +12,7 @@ import { resolvePayoutMethod } from './payout-method.service.js';
 import { OrganizerCreditService } from './organizer-credit.service.js';
 import { createPrefundedSettlement } from './prefund-settlement.js';
 import { FundingRefundService } from './funding-refund.service.js';
+import { PreauthService } from './preauth.service.js';
 import { checkInWindow, eventStartsAt } from '../utils/eventSchedule.js';
 import {
   CANCELLATION_TIERS,
@@ -81,6 +82,7 @@ export class FundingService {
   // What hired ushers see about their pay for this event.
   static async protectionFor(event) {
     if (!event || event.fundingMode === 'pay_after') return 'pay_after';
+    if (event.fundingMode === 'preauth') return PreauthService.protectionFor(event);
     return paymentProtection(event, await this.summary(event));
   }
 
@@ -171,6 +173,8 @@ export class FundingService {
   // Records a Paymob transaction for a funding checkout. A payment that arrives after the event
   // stopped needing it (cancelled, released, deleted, or switched to pay-after) becomes credit.
   static async applyFundingTransaction(funding, obj) {
+    // The booking fee and card holds of preauth events follow their own rules.
+    if (funding.kind && funding.kind !== 'advance') return PreauthService.applyTransaction(funding, obj);
     // Refunds the platform sent back to the card are already recorded.
     if (await FundingRefundService.isOwnRefundCallback(funding, obj)) return { ignored: true };
     if (Number(obj.amount_cents) !== funding.amountCents || obj.currency !== funding.currency) {
@@ -252,6 +256,7 @@ export class FundingService {
   }
 
   static async assertCanConfirm(event) {
+    if (event.fundingMode === 'preauth') return PreauthService.assertCanConfirm(event);
     if (event.fundingMode === 'prefund') {
       const summary = await this.summary(event);
       if (summary.shortfallCents > 0) {
@@ -267,6 +272,8 @@ export class FundingService {
 
   static async changeFundingMode({ eventId, organizerId, mode }) {
     if (!['prefund', 'pay_after'].includes(mode)) throw new AppError('Funding mode must be prefund or pay_after', 400);
+    const current = await Event.findOne({ where: { id: eventId, organizerId }, attributes: ['fundingMode'] });
+    if (current?.fundingMode === 'preauth') throw new AppError('This event is paid by card holds and its payment method cannot change', 409);
     if (mode === 'pay_after') {
       const tier = await OrganizerCreditService.evaluateOrganizerTier(organizerId);
       if (tier.tier !== 'trusted') throw new AppError('Only trusted organizations can pay after the event', 403);
@@ -431,6 +438,7 @@ export class FundingService {
   // Runs inside EventService.changeStatus when an event is cancelled. The caller saves the event
   // and calls afterCancellation once the transaction commits.
   static async settleCancellation(event, { transaction }) {
+    if (event.fundingMode === 'preauth') return event.fundsReleasedAt ? null : PreauthService.settleCancellation(event, { transaction });
     if (event.fundingMode !== 'prefund' || event.fundsReleasedAt) return null;
     const summary = await this.summary(event, { transaction });
     if (summary.fundedCents <= 0) return null;
@@ -466,6 +474,7 @@ export class FundingService {
 
   static async afterCancellation(event, result) {
     if (!result) return;
+    if (result.preauth) return PreauthService.afterCancellation(event, result);
     if (result.settlement) await processAutomaticPayouts(result.settlement);
     await FundingRefundService.processPending({ eventId: event.id });
     await Promise.all(result.plan.compensation.map((line) => notifySafely({
@@ -632,6 +641,7 @@ export class FundingService {
 
   static async heldFundsBlockDeletion(eventId, { transaction } = {}) {
     const event = await Event.findByPk(eventId, { transaction, paranoid: false, attributes: ['id', 'fundingMode', 'fundsReleasedAt'] });
+    if (event?.fundingMode === 'preauth') return PreauthService.holdsBlockDeletion(eventId, { transaction });
     if (!event || event.fundsReleasedAt) return false;
     const held = await EventFunding.count({ where: { eventId, collectionStatus: 'paid' }, transaction });
     return held > 0;

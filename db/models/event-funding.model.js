@@ -26,18 +26,33 @@ export const EventFunding = sequelize.define(
       type: DataTypes.ENUM('paymob', 'credit'),
       allowNull: false,
     },
+    // advance: legacy prefund checkout or credit. fee: the non-refundable booking fee (preauth).
+    // day_hold: a card hold for one event day (preauth), authorized now and captured after the day.
+    kind: {
+      type: DataTypes.ENUM('advance', 'fee', 'day_hold'),
+      allowNull: false,
+      defaultValue: 'advance',
+    },
+    dayIndex: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: -1,
+    },
     amountCents: {
       type: DataTypes.INTEGER,
       allowNull: false,
       validate: { min: 1 },
     },
+    // day_hold: the amount captured (or to be captured) from the hold, and why it was closed.
+    capturedCents: { type: DataTypes.INTEGER, allowNull: true },
+    closeReason: { type: DataTypes.STRING, allowNull: true },
     currency: {
       type: DataTypes.STRING(3),
       allowNull: false,
       defaultValue: 'EGP',
     },
     collectionStatus: {
-      type: DataTypes.ENUM('not_started', 'pending', 'paid', 'failed', 'refunded'),
+      type: DataTypes.ENUM('not_started', 'pending', 'paid', 'failed', 'refunded', 'authorized', 'voided', 'closing'),
       allowNull: false,
       defaultValue: 'not_started',
     },
@@ -74,7 +89,7 @@ export const EventFunding = sequelize.define(
       {
         name: 'event_fundings_active_checkout_unique',
         unique: true,
-        fields: ['eventId'],
+        fields: ['eventId', 'kind', 'dayIndex'],
         where: { source: 'paymob', collectionStatus: { [Op.in]: ['not_started', 'pending'] }, deletedAt: null },
       },
     ],

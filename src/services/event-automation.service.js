@@ -4,6 +4,7 @@ import { AttendanceService } from './attendance.service.js';
 import { EventService } from './event.service.js';
 import { FundingService } from './funding.service.js';
 import { fundingDeadline, releaseDueAt } from './funding-policy.js';
+import { PreauthService } from './preauth.service.js';
 import { StandbyService } from './standby.service.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +19,15 @@ const lastSweep = new Map();
 export class EventAutomationService {
     static async runForEvent(event, now = new Date()) {
         if (!event || event.deletedAt || event.status === 'cancelled') return;
+        if (event.fundingMode === 'preauth') {
+            await PreauthService.runForEvent(event, now);
+            await event.reload();
+            if (event.status !== 'cancelled') {
+                await StandbyService.releaseAtStart(event, now);
+                await AttendanceService.finalizeAttendance(event, now);
+            }
+            return;
+        }
         if (fundingDeadline(event) && now >= fundingDeadline(event)) {
             await FundingService.enforceFundingDeadline(event, now);
             await event.reload();
@@ -44,7 +54,7 @@ export class EventAutomationService {
                 status: { [Op.in]: ['open', 'confirmed', 'completed'] },
                 fundsReleasedAt: null,
                 // From shortly before the first day until a month after the last day.
-                eventDate: { [Op.lte]: new Date(now.getTime() + 3 * DAY_MS) },
+                eventDate: { [Op.lte]: new Date(now.getTime() + 6 * DAY_MS) },
                 [Op.or]: [
                     { endDate: { [Op.gte]: new Date(now.getTime() - 30 * DAY_MS) } },
                     { endDate: null, eventDate: { [Op.gte]: new Date(now.getTime() - 30 * DAY_MS) } },
@@ -61,6 +71,8 @@ export class EventAutomationService {
     static async sweep(scope = {}, now = new Date()) {
         const events = await this.dueEvents({ ...scope, now });
         const failures = [];
+        // Holds on cancelled events whose Paymob call failed are retried.
+        await PreauthService.closeCancelledHolds().catch(() => undefined);
         for (const event of events) {
             try {
                 await this.runForEvent(event, now);

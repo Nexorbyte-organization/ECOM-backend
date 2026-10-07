@@ -126,13 +126,19 @@ export const EventSettlement = sequelize.define(
       allowNull: false,
       defaultValue: 'checkout',
     },
+    // preauth events settle one event day at a time; -1 for every other settlement.
+    dayIndex: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: -1,
+    },
   },
   {
     timestamps: true,
     tableName: 'event_settlements',
     indexes: [
-      { name: 'event_settlements_bulk_event_unique', unique: true, fields: ['eventId'], where: { targetTalentId: null } },
-      { name: 'event_settlements_individual_unique', unique: true, fields: ['eventId', 'targetTalentId'], where: { targetTalentId: { [Op.ne]: null } } },
+      { name: 'event_settlements_bulk_event_unique', unique: true, fields: ['eventId', 'dayIndex'], where: { targetTalentId: null } },
+      { name: 'event_settlements_individual_unique', unique: true, fields: ['eventId', 'targetTalentId', 'dayIndex'], where: { targetTalentId: { [Op.ne]: null } } },
       { fields: ['organizerId', 'collectionStatus'] },
       { fields: ['paymobOrderId'] },
       { fields: ['paymobTransactionId'] },

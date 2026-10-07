@@ -33,7 +33,7 @@ export const settlementTotals = (lines) => lines.reduce((totals, line) => ({
 }), { grossAmountCents: 0, collectionAmountCents: 0, platformFeeCents: 0, usherAmountCents: 0 });
 
 // A settlement paid from funds already held for the event, so no Paymob collection is needed.
-export const createPrefundedSettlement = async ({ event, targetTalentId = null, specialReference, lineDrafts, transaction }) => {
+export const createPrefundedSettlement = async ({ event, targetTalentId = null, specialReference, lineDrafts, dayIndex = -1, transaction }) => {
   const settlement = await EventSettlement.create({
     eventId: event.id,
     organizerId: event.organizerId,
@@ -44,6 +44,7 @@ export const createPrefundedSettlement = async ({ event, targetTalentId = null, 
     payoutStatus: 'not_started',
     specialReference,
     fundingSource: 'prefund',
+    dayIndex,
     collectedAt: new Date(),
     paymentMethod: 'Event funds held in advance',
     isLive: false,
