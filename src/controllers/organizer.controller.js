@@ -21,6 +21,7 @@ import { normalizeEventCategory } from '../utils/normalization.js';
 import { sequelize } from '../../db/connection.js';
 import { eventDays, hasEventEnded, hasEventStarted, normalizeEventDays, scheduleFromDays } from '../utils/eventSchedule.js';
 import { EVENT_FIELD_LABELS, changedEventFields, lockedEventFields, withScheduleChanges } from '../utils/eventEditing.js';
+import { getAnalytics } from '../services/analytics.service.js';
 
 // Changes hired ushers need to hear about.
 const SCHEDULE_FIELDS = ['schedule', 'location', 'gatheringLocation', 'budget', 'dressCode'];
@@ -62,6 +63,10 @@ const APPLICATION_DECISION_NOTICES = {
 };
 
 export class OrganizerController {
+    static async getAnalytics(req, res) {
+        const data = await getAnalytics(getOrganizerId(req.authUser));
+        return res.status(200).json({ success: true, data });
+    }
 
     // US-201: Get own organizer profile
     static async getMyProfile(req, res, next) {
